@@ -17,6 +17,8 @@ import {
   splitMarkDownTemplate,
   getMustacheTemplating
 } from './Model/index.js'
+import { ulid } from 'ulid'
+import { PassThrough } from 'stream'
 
 const QQBot = await (async () => {
   try {
@@ -32,6 +34,23 @@ logger.info(logger.yellow('- 正在加载 QQBot 适配器插件'))
 const userIdCache = {}
 const markdown_template = await importJS('Model/template/markdownTemplate.js', 'default')
 const TmplPkg = await importJS('templates/index.js')
+
+// mp3 buffer 转 pcm buffer
+async function mp3ToPcmBuffer(mp3Buffer) {
+  return new Promise((resolve, reject) => {
+    const inputStream = new PassThrough()
+    inputStream.end(mp3Buffer)
+    const output = []
+    ffmpeg(inputStream)
+      .format('s16le')
+      .audioChannels(1)
+      .audioFrequency(48000)
+      .on('error', reject)
+      .on('end', () => resolve(Buffer.concat(output)))
+      .pipe()
+      .on('data', chunk => output.push(chunk))
+  })
+}
 
 const adapter = new class QQBotAdapter {
   constructor() {
@@ -70,18 +89,15 @@ const adapter = new class QQBotAdapter {
     if (isSilk(buffer)) return buffer
 
     const convFile = path.join("temp", ulid())
-
     try {
-      await fs.writeFile(convFile, buffer)
-      file = (await encodeSilk(fs.readFileSync(`${convFile}.pcm`), 48000)).data
+      await fs.promises.writeFile(convFile, buffer)
+      await Bot.exec(`ffmpeg -i "${convFile}" -f s16le -ar 48000 -ac 1 "${convFile}.pcm"`)
+      file = Buffer.from((await encodeSilk(await fs.promises.readFile(`${convFile}.pcm`), 48000)).data)
     } catch (err) {
       logger.error(`silk 转码错误：${err}`)
     }
-
     for (const i of [convFile, `${convFile}.pcm`]) {
-      try {
-        fs.unlinkSync(i)
-      } catch (err) { }
+      fs.promises.unlink(i).catch(() => {})
     }
     return file
   }
@@ -1806,3 +1822,4 @@ export class QQBotAdapter extends plugin {
 
 const endTime = new Date()
 logger.info(logger.green(`- QQBot 适配器插件 加载完成! 耗时：${endTime - startTime}ms`))
+
