@@ -47,6 +47,7 @@ const adapter = new class QQBotAdapter {
       this.toQRCodeRegExp = new RegExp(config.toQRCode, 'g')
     }
 
+    this.sep = ":"
     if (process.platform === "win32")
       this.sep = ""
     this.bind_user = {}
@@ -78,7 +79,7 @@ const adapter = new class QQBotAdapter {
     }
 
     for (const i of [convFile, `${convFile}.pcm`])
-      fs.unlink(i).catch(() => {})
+      fs.unlink(i).catch(() => { })
 
     return file
   }
