@@ -1571,6 +1571,7 @@ const adapter = new class QQBotAdapter {
       return this.makeWebHookSign(req, this.appid[appid].info.secret)
     if ("t" in req.body)
       this.appid[appid].sdk.dispatchEvent(req.body.t, req.body)
+    req.res.send({ code: 0 })
     req.res.sendStatus(200)
   }
 
