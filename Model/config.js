@@ -9,6 +9,7 @@ let { config, configSave } = await makeConfig('QQBot', {
   toCallback: true,
   toBotUpload: true,
   hideGuildRecall: false,
+  imageTargetSize: 3.5,
   toQQUin: false,
   toImg: true,
   callStats: false,

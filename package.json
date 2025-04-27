@@ -6,6 +6,8 @@
     "qq-official-bot": "1.0.3",
     "qrcode": "^1.5.3",
     "silk-wasm": "^3.6.3",
-    "tweetnacl": "^1.0.3"
+    "tweetnacl": "^1.0.3",
+    "url-regex-safe": "^4.0.0",
+    "sharp": "^0.32.6"
   }
 }
