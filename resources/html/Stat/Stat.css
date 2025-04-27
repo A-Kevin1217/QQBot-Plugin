@@ -1,0 +1,106 @@
+@font-face {
+  font-family: "tttgbnumber";
+  src: url("../../../../genshin/resources/font/tttgbnumber.ttf");
+  font-weight: normal;
+  font-style: normal;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  user-select: none;
+}
+
+body {
+  transform: scale(1);
+  transform-origin: 0 0;
+  font-family: "tttgbnumber";
+  color: #28384d;
+  font-size: 20px;
+}
+
+.bg {
+  width: 2480px;
+  height: 100%;
+  position: relative;
+  background: url("../DAU/img/bg.jpg") no-repeat fixed;
+  background-size: 100% 100%;
+  background-size: cover;
+  padding: 1px;
+  box-sizing: border-box;
+}
+
+.bg::before {
+  content: "";
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  left: 0;
+  top: 0;
+  background: inherit;
+  filter: blur(3px);
+  z-index: -1;
+}
+
+.container {
+  width: 2480px;
+  /* height: 610px; */
+  overflow: hidden;
+  padding: 20px 50px;
+}
+
+.box {
+  margin-bottom: 30px;
+  font-weight: 800;
+  font-size: 48px;
+  margin-left: 70px;
+  display: flex;
+}
+
+#chartContainer {
+  width: 1000px;
+  height: 1000px;
+  background: url(../DAU/img/chart.png) no-repeat 50% / cover;
+  margin-left: -80px;
+}
+
+.tooltip {
+  margin-left: 20px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.tooltip li {
+  list-style: none;
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+}
+
+.tooltip li i {
+  width: 20px;
+  height: 20px;
+  margin-right: 20px;
+  margin-left: 50PX;
+}
+
+.tooltip li .action {
+  width: 900px;
+}
+
+.tooltip li em {
+  font-size: 40px;
+  color: #28384d;
+  font-style: normal;
+  width: 30px;
+}
+
+.tooltip li .num {
+  width: 180px;
+}
+
+.tooltip li .percent {
+  width: 80px;
+}

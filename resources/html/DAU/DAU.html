@@ -1,0 +1,286 @@
+﻿<!DOCTYPE html>
+<html>
+
+<head>
+  <meta http-equiv="content-type" content="text/html;charset=utf-8" />
+  <link rel="shortcut icon" href="#" />
+  <link rel="stylesheet" type="text/css" href="{{pluResPath}}html/DAU/DAU.css" />
+  <link rel="preload" href="{{pluResPath}}script/g2plot.min.js" as="script" />
+  <link rel="preload" href="{{pluResPath}}font/tttgbnumber.ttf" as="font">
+  <link rel="preload" href="{{pluResPath}}font/ruizizhenyan.ttf" as="font">
+  <link rel="preload" href="{{pluResPath}}html/DAU/img/bg.webp" as="image">
+</head>
+
+<body class="bg">
+  <div class="container" id="container">
+    <div class="title-box">
+      <div class="info">
+        <!-- <div class="uid"></div> -->
+        <div class="month">
+          <img class="avatar" src="{{avatar}}" />
+          {{nickname}} - QQBOTDAU
+        </div>
+      </div>
+    </div>
+    <div class="data-box">
+      <div class="average">
+        <div class="head">最近{{totalDAU.days}}日平均DAU</div>
+        <div class="primogems">
+          <div class="icon-user"></div>
+          <div class="text">上行消息人数：{{totalDAU.user_count}}</div>
+        </div>
+        <div class="primogems">
+          <div class="icon-group"></div>
+          <div class="text">上行消息群数：{{totalDAU.group_count}}</div>
+        </div>
+        <div class="primogems">
+          <div class="icon-msg"></div>
+          <div class="text">上行消息量：{{totalDAU.receive_msg_count}}</div>
+        </div>
+        <div class="primogems">
+          <div class="icon-send"></div>
+          <div class="text">下行消息量：{{totalDAU.send_msg_count}}</div>
+        </div>
+        <div class="primogems">
+          <div class="icon-group"></div>
+          <div class="text">总群数：{{groupNum}}</div>
+        </div>
+        <div class="primogems">
+          <div class="icon-user"></div>
+          <div class="text">总用户：{{userNum}}</div>
+        </div>
+      </div>
+      <div class="average">
+        <div class="head">今日DAU</div>
+        <div class="primogems">
+          <div class="icon-user"></div>
+          <div class="text">上行消息人数：{{todayDAU.user_count}}</div>
+        </div>
+        <div class="primogems">
+          <div class="icon-group"></div>
+          <div class="text">上行消息群数：{{todayDAU.group_count}}</div>
+        </div>
+        <div class="primogems">
+          <div class="icon-msg"></div>
+          <div class="text">上行消息量：{{todayDAU.receive_msg_count}}</div>
+        </div>
+        <div class="primogems">
+          <div class="icon-send"></div>
+          <div class="text">下行消息量：{{todayDAU.send_msg_count}}</div>
+        </div>
+        <div class="primogems">
+          <div class="icon-group"></div>
+          <div class="text">新增群数：{{todayDAU.group_increase_count}}</div>
+        </div>
+        <div class="primogems">
+          <div class="icon-group"></div>
+          <div class="text">减少群数：{{todayDAU.group_decrease_count}}</div>
+        </div>
+      </div>
+      <div class="average">
+        <div class="head">昨日DAU</div>
+        <div class="primogems">
+          <div class="icon-user"></div>
+          <div class="text">上行消息人数：{{yesterdayDau.user_count||"-"}}</div>
+        </div>
+        <div class="primogems">
+          <div class="icon-group"></div>
+          <div class="text">上行消息群数：{{yesterdayDau.group_count||"-"}}</div>
+        </div>
+        <div class="primogems">
+          <div class="icon-msg"></div>
+          <div class="text">上行消息量：{{yesterdayDau.receive_msg_count||"-"}}</div>
+        </div>
+        <div class="primogems">
+          <div class="icon-send"></div>
+          <div class="text">下行消息量：{{yesterdayDau.send_msg_count||"-"}}</div>
+        </div>
+        <div class="primogems">
+          <div class="icon-group"></div>
+          <div class="text">新增群数：{{yesterdayDau.group_increase_count}}</div>
+        </div>
+        <div class="primogems">
+          <div class="icon-group"></div>
+          <div class="text">减少群数：{{yesterdayDau.group_decrease_count}}</div>
+        </div>
+      </div>
+    </div>
+    <div class="chart-box">
+      <div class="head">DAU {{monthly}}</div>
+      <div class="chart-info">
+        <div class="chartContainer" id="chartContainer-coldata"></div>
+      </div>
+    </div>
+    <div class="chart-box">
+      <div class="chart-info">
+        <div class="chartContainer" id="chartContainer-linedata"></div>
+      </div>
+    </div>
+    <div class="box">
+      <div id="chartContainer"></div>
+      <ul class="tooltip">
+        {{each group val}}
+        <li>
+          <i style="background: {{val.color}}"></i>
+          <span class="action"><em>{{val.name}}</em></span>
+          <span class="num"><em>{{val.num}}</em></span>
+          <span class="percent"><em>{{val.percent}}</em></span>
+        </li>
+        {{/each}}
+      </ul>
+    </div>
+  </div>
+</body>
+<script type="text/javascript" src="{{pluResPath}}script/g2plot.min.js"></script>
+<script>
+  const { Pie } = G2Plot
+  const data = JSON.parse(`{{@ group_by}}`)
+  const piePlot = new Pie('chartContainer', {
+    renderer: 'svg',
+    animation: false,
+    data: data,
+    appendPadding: 20,
+    angleField: 'num',
+    colorField: 'name',
+    radius: 1,
+    innerRadius: 0.7,
+    color: JSON.parse(`{{@ color}}`),
+    label: {
+      type: 'inner',
+      offset: '-50%',
+      autoRotate: false,
+      style: {
+        textAlign: 'center',
+        fontFamily: 'tttgbnumber',
+        'fontSize': 48
+      },
+      formatter: ({ percent }) => {
+        percent = (percent * 100).toFixed(0)
+        return `${percent}%`
+      }
+    },
+    statistic: {
+      title: {
+        offsetY: -18,
+        content: '总计',
+        style: {
+          fontFamily: 'tttgbnumber',
+          'fontSize': 64
+        }
+      },
+      content: {
+        offsetY: -10,
+        style: {
+          fontFamily: 'tttgbnumber',
+          'fontSize': 96
+        }
+      }
+    },
+    legend: false
+  })
+  piePlot.render()
+</script>
+<script type="text/javascript" src="{{pluResPath}}script/g2plot.min.js"></script>
+<script>
+  const { DualAxes } = G2Plot
+  const daus = JSON.parse(`{{@ daus}}`)
+  const fontstyle = {
+    fontFamily: 'tttgbnumber',
+    fontSize: 14,
+    fontWeight: 300,
+  }
+  for (const ty of ['coldata', 'linedata']) {
+    const dualPlot = new DualAxes(`chartContainer-${ty}`, {
+      animation: false,
+      data: daus[ty],
+      xField: 'time',
+      yField: ['linecount', 'count'],
+      meta: {
+        time: {
+          alias: '日期',
+          formatter: (v) => v.slice(5)
+        }
+      },
+      xAxis: {
+        label: {
+          style: {
+            fill: 'black',
+            ...fontstyle
+          }
+        }
+      },
+      yAxis: {
+        linecount: {
+          label: {
+            style: fontstyle
+          }
+        },
+        count: {
+          label: {
+            style: fontstyle
+          }
+        }
+      },
+      geometryOptions: [
+        {
+          geometry: 'column',
+          isGroup: true,
+          seriesField: 'linename',
+          columnWidthRatio: 0.5,
+          color: ['#877c74', '#92928b'],
+          label: {
+            position: 'top',
+            visible: true,
+            offsetY: -10,
+            style: {
+              fontFamily: 'ruizizhenyan',
+              fontSize: 16,
+              fill: 'white',
+              fontWeight: 600,
+              stroke: '#626681',
+              lineWidth: 4,
+            }
+          }
+        },
+        {
+          geometry: 'line',
+          seriesField: 'name',
+          label: {
+            visible: true,
+            offsetY: -10,
+            style: {
+              fontFamily: 'ruizizhenyan',
+              fontSize: 18,
+              fontWeight: 400,
+              fill: 'white',
+              stroke: '#626681',
+              lineWidth: 4,
+            }
+          },
+          color: ['#D44000', '#FF7A00'],
+          lineStyle: {
+            lineWidth: 4
+          }
+        }
+      ],
+      legend: {
+        position: 'top',
+        itemName: {
+          style: {
+            ...fontstyle,
+            fontSize: 16
+          }
+        },
+        offsetY: -10,
+        itemHeight: 30
+      },
+      theme: {
+        styleSheet: {
+          fontFamily: 'ruizizhenyan',
+        }
+      }
+    })
+    dualPlot.render()
+  }
+</script>
+</html>

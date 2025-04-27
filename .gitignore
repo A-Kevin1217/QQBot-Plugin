@@ -1,0 +1,9 @@
+db
+test
+.vscode
+templates
+**/test.js
+node_modules
+Model/template/markdownTemplate.js
+Model/template/groupIncreaseMsg.js
+Model/template/oneKeySendGroupMsg.js

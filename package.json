@@ -1,0 +1,11 @@
+{
+  "name": "QQBot-Plugin",
+  "type": "module",
+  "author": "TimeRainStarSky",
+  "dependencies": {
+    "qq-official-bot": "1.0.3",
+    "qrcode": "^1.5.3",
+    "silk-wasm": "^3.6.3",
+    "tweetnacl": "^1.0.3"
+  }
+}
