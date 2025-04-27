@@ -1,7 +1,7 @@
 import _ from 'lodash'
 import fs from 'node:fs'
 import QRCode from 'qrcode'
-import { join } from 'node:path'
+import path from 'node:path'
 import imageSize from 'image-size'
 import { randomUUID } from 'node:crypto'
 import { encode as encodeSilk, isSilk } from "silk-wasm"
@@ -1391,7 +1391,7 @@ const adapter = new class QQBotAdapter {
       case 'increase':
         Bot[data.self_id].dau.setDau('group_increase', data)
         if (event.notice_type === 'group') {
-          const path = join(process.cwd(), 'plugins', 'QQBot-Plugin', 'Model', 'template', 'groupIncreaseMsg.js')
+          const path = path.join(process.cwd(), 'plugins', 'QQBot-Plugin', 'Model', 'template', 'groupIncreaseMsg.js')
           if (fs.existsSync(path)) {
             import(`file://${path}`).then(i => i.default).then(async i => {
               let msg
@@ -1574,7 +1574,6 @@ const adapter = new class QQBotAdapter {
     if ("t" in req.body)
       this.appid[appid].sdk.dispatchEvent(req.body.t, req.body)
     req.res.send({ code: 0 })
-    req.res.sendStatus(200)
   }
 
   async load() {
