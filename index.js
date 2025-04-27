@@ -73,15 +73,16 @@ const adapter = new class QQBotAdapter {
 
     try {
       await fs.writeFile(convFile, buffer)
-      await Bot.exec(`ffmpeg -i "${convFile}" -f s16le -ar 48000 -ac 1 "${convFile}.pcm"`)
-      file = Buffer.from((await encodeSilk(await fs.readFile(`${convFile}.pcm`), 48000)).data)
+      file = (await encodeSilk(fs.readFileSync(`${convFile}.pcm`), 48000)).data
     } catch (err) {
       logger.error(`silk 转码错误：${err}`)
     }
 
-    for (const i of [convFile, `${convFile}.pcm`])
-      fs.unlink(i).catch(() => { })
-
+    for (const i of [convFile, `${convFile}.pcm`]) {
+      try {
+        fs.unlinkSync(i)
+      } catch (err) { }
+    }
     return file
   }
 
