@@ -7,3 +7,4 @@ node_modules
 Model/template/markdownTemplate.js
 Model/template/groupIncreaseMsg.js
 Model/template/oneKeySendGroupMsg.js
+.DS_Store
