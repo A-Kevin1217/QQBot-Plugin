@@ -97,7 +97,7 @@ const adapter = new class QQBotAdapter {
       logger.error(`silk 转码错误：${err}`)
     }
     for (const i of [convFile, `${convFile}.pcm`]) {
-      fs.promises.unlink(i).catch(() => {})
+      fs.promises.unlink(i).catch(() => { })
     }
     return file
   }
@@ -434,10 +434,6 @@ const adapter = new class QQBotAdapter {
           messages.push([i])
           break
         case 'file':
-          // if (i.file) i.file = await Bot.fileToUrl(i.file, i, i.type)
-          // button.push(...this.makeButtons(data, [[{ text: i.name || i.file, link: i.file }]]))
-          // content += '[文件(请点击按钮查看)]'
-          // break
           return []
         case 'at':
           if (i.qq == 'all') content += '@everyone'
