@@ -5,7 +5,12 @@ import path from 'node:path'
 import imageSize from 'image-size'
 import { randomUUID } from 'node:crypto'
 import { encode as encodeSilk, isSilk } from "silk-wasm"
-import sharp from "sharp"
+var sharp
+if (config.imageTargetSize) try {
+  sharp = (await import("sharp")).default
+} catch (err) {
+  Bot.makeLog("error", ["sharp 导入错误，图片压缩关闭", err], "QQBot-Plugin")
+}
 import {
   Dau,
   importJS,
@@ -18,7 +23,6 @@ import {
   getMustacheTemplating
 } from './Model/index.js'
 import { ulid } from 'ulid'
-import { PassThrough } from 'stream'
 
 const QQBot = await (async () => {
   try {
@@ -34,12 +38,6 @@ logger.info(logger.yellow('- 正在加载 QQBot 适配器插件'))
 const userIdCache = {}
 const markdown_template = await importJS('Model/template/markdownTemplate.js', 'default')
 const TmplPkg = await importJS('templates/index.js')
-let sharp
-if (config.imageTargetSize) try {
-  sharp = (await import("sharp")).default
-} catch (err) {
-  Bot.makeLog("error", ["sharp 导入错误，图片压缩关闭", err], "QQBot-Plugin")
-}
 
 const adapter = new class QQBotAdapter {
   constructor() {
