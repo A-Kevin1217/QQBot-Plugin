@@ -35,27 +35,10 @@ const userIdCache = {}
 const markdown_template = await importJS('Model/template/markdownTemplate.js', 'default')
 const TmplPkg = await importJS('templates/index.js')
 let sharp
-if (config.imageLength) try {
+if (config.imageTargetSize) try {
   sharp = (await import("sharp")).default
 } catch (err) {
   Bot.makeLog("error", ["sharp 导入错误，图片压缩关闭", err], "QQBot-Plugin")
-}
-
-// mp3 buffer 转 pcm buffer
-async function mp3ToPcmBuffer(mp3Buffer) {
-  return new Promise((resolve, reject) => {
-    const inputStream = new PassThrough()
-    inputStream.end(mp3Buffer)
-    const output = []
-    ffmpeg(inputStream)
-      .format('s16le')
-      .audioChannels(1)
-      .audioFrequency(48000)
-      .on('error', reject)
-      .on('end', () => resolve(Buffer.concat(output)))
-      .pipe()
-      .on('data', chunk => output.push(chunk))
-  })
 }
 
 const adapter = new class QQBotAdapter {
