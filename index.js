@@ -34,6 +34,12 @@ logger.info(logger.yellow('- 正在加载 QQBot 适配器插件'))
 const userIdCache = {}
 const markdown_template = await importJS('Model/template/markdownTemplate.js', 'default')
 const TmplPkg = await importJS('templates/index.js')
+let sharp
+if (config.imageLength) try {
+  sharp = (await import("sharp")).default
+} catch (err) {
+  Bot.makeLog("error", ["sharp 导入错误，图片压缩关闭", err], "QQBot-Plugin")
+}
 
 // mp3 buffer 转 pcm buffer
 async function mp3ToPcmBuffer(mp3Buffer) {
