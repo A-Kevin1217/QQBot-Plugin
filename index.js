@@ -5,12 +5,7 @@ import path from 'node:path'
 import imageSize from 'image-size'
 import { randomUUID } from 'node:crypto'
 import { encode as encodeSilk, isSilk } from "silk-wasm"
-var sharp
-if (config.imageTargetSize) try {
-  sharp = (await import("sharp")).default
-} catch (err) {
-  Bot.makeLog("error", ["sharp 导入错误，图片压缩关闭", err], "QQBot-Plugin")
-}
+import sharp from "sharp"
 import {
   Dau,
   importJS,
@@ -23,6 +18,7 @@ import {
   getMustacheTemplating
 } from './Model/index.js'
 import { ulid } from 'ulid'
+import { PassThrough } from 'stream'
 
 const QQBot = await (async () => {
   try {
