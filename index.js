@@ -1,7 +1,7 @@
 import _ from 'lodash'
 import fs from 'node:fs'
 import QRCode from 'qrcode'
-import path from 'node:path'
+import { join } from 'node:path'
 import imageSize from 'image-size'
 import { randomUUID } from 'node:crypto'
 import { encode as encodeSilk, isSilk } from "silk-wasm"
@@ -17,8 +17,6 @@ import {
   splitMarkDownTemplate,
   getMustacheTemplating
 } from './Model/index.js'
-import { ulid } from 'ulid'
-import { PassThrough } from 'stream'
 
 const QQBot = await (async () => {
   try {
@@ -72,16 +70,18 @@ const adapter = new class QQBotAdapter {
     if (isSilk(buffer)) return buffer
 
     const convFile = path.join("temp", ulid())
+
     try {
-      await fs.promises.writeFile(convFile, buffer)
+      await fs.writeFile(convFile, buffer)
       await Bot.exec(`ffmpeg -i "${convFile}" -f s16le -ar 48000 -ac 1 "${convFile}.pcm"`)
-      file = Buffer.from((await encodeSilk(await fs.promises.readFile(`${convFile}.pcm`), 48000)).data)
+      file = Buffer.from((await encodeSilk(await fs.readFile(`${convFile}.pcm`), 48000)).data)
     } catch (err) {
       logger.error(`silk 转码错误：${err}`)
     }
-    for (const i of [convFile, `${convFile}.pcm`]) {
-      fs.promises.unlink(i).catch(() => { })
-    }
+
+    for (const i of [convFile, `${convFile}.pcm`])
+      fs.unlink(i).catch(() => { })
+
     return file
   }
 
@@ -191,7 +191,7 @@ const adapter = new class QQBotAdapter {
           message: button.callback,
           message_id: data._ret_id
         }
-        // setTimeout(() => delete data.bot.callback[msg.id], 300000)
+        //setTimeout(() => delete data.bot.callback[msg.id], 300000)
       } else {
         msg.action = {
           type: 2,
@@ -326,7 +326,6 @@ const adapter = new class QQBotAdapter {
     const match = text.match(this.toQRCodeRegExp)
     if (match) {
       for (const url of match) {
-        if (url.startsWith('mqqapi://')) continue
         button.push(...this.makeButtons(data, [[{ text: url, link: url }]]))
         text = text.replace(url, '[链接(请点击按钮查看)]')
       }
@@ -418,6 +417,10 @@ const adapter = new class QQBotAdapter {
           messages.push([i])
           break
         case 'file':
+          // if (i.file) i.file = await Bot.fileToUrl(i.file, i, i.type)
+          // button.push(...this.makeButtons(data, [[{ text: i.name || i.file, link: i.file }]]))
+          // content += '[文件(请点击按钮查看)]'
+          // break
           return []
         case 'at':
           if (i.qq == 'all') content += '@everyone'
@@ -1387,7 +1390,7 @@ const adapter = new class QQBotAdapter {
       case 'increase':
         Bot[data.self_id].dau.setDau('group_increase', data)
         if (event.notice_type === 'group') {
-          const path = path.join(process.cwd(), 'plugins', 'QQBot-Plugin', 'Model', 'template', 'groupIncreaseMsg.js')
+          const path = join(process.cwd(), 'plugins', 'QQBot-Plugin', 'Model', 'template', 'groupIncreaseMsg.js')
           if (fs.existsSync(path)) {
             import(`file://${path}`).then(i => i.default).then(async i => {
               let msg
@@ -1570,6 +1573,7 @@ const adapter = new class QQBotAdapter {
     if ("t" in req.body)
       this.appid[appid].sdk.dispatchEvent(req.body.t, req.body)
     req.res.send({ code: 0 })
+    req.res.sendStatus(200)
   }
 
   async load() {
@@ -1802,4 +1806,3 @@ export class QQBotAdapter extends plugin {
 
 const endTime = new Date()
 logger.info(logger.green(`- QQBot 适配器插件 加载完成! 耗时：${endTime - startTime}ms`))
-
