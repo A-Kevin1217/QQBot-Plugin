@@ -326,6 +326,7 @@ const adapter = new class QQBotAdapter {
     const match = text.match(this.toQRCodeRegExp)
     if (match) {
       for (const url of match) {
+        if (url.startsWith('mqqapi://')) continue
         button.push(...this.makeButtons(data, [[{ text: url, link: url }]]))
         text = text.replace(url, '[链接(请点击按钮查看)]')
       }
