@@ -1,11 +1,10 @@
 import _ from 'lodash'
 import fs from 'node:fs'
 import QRCode from 'qrcode'
-import path from 'node:path'
+import { join } from 'node:path'
 import imageSize from 'image-size'
 import { randomUUID } from 'node:crypto'
 import { encode as encodeSilk, isSilk } from "silk-wasm"
-import sharp from "sharp"
 import {
   Dau,
   importJS,
@@ -17,8 +16,6 @@ import {
   splitMarkDownTemplate,
   getMustacheTemplating
 } from './Model/index.js'
-import { ulid } from 'ulid'
-import { PassThrough } from 'stream'
 
 const QQBot = await (async () => {
   try {
@@ -72,16 +69,18 @@ const adapter = new class QQBotAdapter {
     if (isSilk(buffer)) return buffer
 
     const convFile = path.join("temp", ulid())
+
     try {
-      await fs.promises.writeFile(convFile, buffer)
+      await fs.writeFile(convFile, buffer)
       await Bot.exec(`ffmpeg -i "${convFile}" -f s16le -ar 48000 -ac 1 "${convFile}.pcm"`)
-      file = Buffer.from((await encodeSilk(await fs.promises.readFile(`${convFile}.pcm`), 48000)).data)
+      file = Buffer.from((await encodeSilk(await fs.readFile(`${convFile}.pcm`), 48000)).data)
     } catch (err) {
       logger.error(`silk 转码错误：${err}`)
     }
-    for (const i of [convFile, `${convFile}.pcm`]) {
-      fs.promises.unlink(i).catch(() => { })
-    }
+
+    for (const i of [convFile, `${convFile}.pcm`])
+      fs.unlink(i).catch(() => { })
+
     return file
   }
 
@@ -322,7 +321,7 @@ const adapter = new class QQBotAdapter {
     return messages
   }
 
-  makeMarkdownText (data, text, button) {
+  makeMarkdownText(data, text, button) {
     const match = text.match(this.toQRCodeRegExp)
     if (match) {
       for (const url of match) {
@@ -417,6 +416,10 @@ const adapter = new class QQBotAdapter {
           messages.push([i])
           break
         case 'file':
+          // if (i.file) i.file = await Bot.fileToUrl(i.file, i, i.type)
+          // button.push(...this.makeButtons(data, [[{ text: i.name || i.file, link: i.file }]]))
+          // content += '[文件(请点击按钮查看)]'
+          // break
           return []
         case 'at':
           if (i.qq == 'all') content += '@everyone'
@@ -573,52 +576,6 @@ const adapter = new class QQBotAdapter {
     return messages
   }
 
-  async compressImage(file, targetSize, data) {
-    try {
-      let buffer
-      if (Buffer.isBuffer(file)) {
-        buffer = file
-      } else if (typeof file === 'string' && file.startsWith("base64://")) {
-        const base64Data = file.slice("base64://".length)
-        buffer = Buffer.from(base64Data, "base64")
-      } else {
-        buffer = await Bot.Buffer(file)
-      }
-
-      if (!Buffer.isBuffer(buffer)) {
-        return file
-      }
-
-      if (buffer.length <= targetSize) {
-        return buffer
-      }
-
-      let low = 10, high = 100, bestQuality = low, bestBuffer = null
-      while (low <= high) {
-        const mid = Math.floor((low + high) / 2)
-        const outputBuffer = await sharp(buffer).jpeg({ quality: mid }).toBuffer()
-        if (outputBuffer.length > targetSize) {
-          high = mid - 1
-        } else {
-          bestQuality = mid
-          bestBuffer = outputBuffer
-          low = mid + 1
-        }
-      }
-
-      if (!bestBuffer) {
-        bestQuality = 10
-        bestBuffer = await sharp(buffer).jpeg({ quality: bestQuality }).toBuffer()
-      }
-
-      Bot.makeLog("debug", ["图片压缩成功，新大小", bestBuffer.length, "质量", bestQuality], data.self_id)
-      return bestBuffer
-    } catch (err) {
-      Bot.makeLog("error", ["压缩图片失败", err], data.self_id)
-      return file
-    }
-  }
-
   async makeMsg(data, msg) {
     const sendType = ['audio', 'image', 'video', 'file']
     const messages = []
@@ -637,8 +594,6 @@ const adapter = new class QQBotAdapter {
           // i.qq = i.qq?.replace?.(`${data.self_id}${this.sep}`, "")
           continue
         case 'text':
-          if (!i.text || !i.text.trim()) continue
-          break
         case 'face':
         case 'ark':
         case 'embed':
@@ -651,15 +606,6 @@ const adapter = new class QQBotAdapter {
           if (message.some(s => sendType.includes(s.type))) {
             messages.push(message)
             message = []
-          }
-          const targetMB = config.imageTargetSize || 3.5
-          const targetSize = targetMB * 1024 * 1024
-
-          if (i.file) {
-            const buffer = await this.compressImage(i.file, targetSize, data)
-            if (Buffer.isBuffer(buffer)) {
-              i.file = buffer
-            }
           }
           break
         case 'file':
@@ -1386,7 +1332,7 @@ const adapter = new class QQBotAdapter {
       case 'increase':
         Bot[data.self_id].dau.setDau('group_increase', data)
         if (event.notice_type === 'group') {
-          const path = path.join(process.cwd(), 'plugins', 'QQBot-Plugin', 'Model', 'template', 'groupIncreaseMsg.js')
+          const path = join(process.cwd(), 'plugins', 'QQBot-Plugin', 'Model', 'template', 'groupIncreaseMsg.js')
           if (fs.existsSync(path)) {
             import(`file://${path}`).then(i => i.default).then(async i => {
               let msg
@@ -1547,7 +1493,7 @@ const adapter = new class QQBotAdapter {
     return true
   }
 
-  async makeWebHookSign(id, req, secret) {
+  async makeWebHookSign(req, secret) {
     const { sign } = (await import("tweetnacl")).default
     const { plain_token, event_ts } = req.body.d
     while (secret.length < 32)
@@ -1556,24 +1502,22 @@ const adapter = new class QQBotAdapter {
       Buffer.from(`${event_ts}${plain_token}`),
       sign.keyPair.fromSeed(Buffer.from(secret)).secretKey,
     )).toString("hex")
-    Bot.makeLog("debug", ["QQBot 签名生成", { plain_token, signature }], id)
     req.res.send({ plain_token, signature })
   }
 
   makeWebHook(req) {
     const appid = req.headers["x-bot-appid"]
     if (!(appid in this.appid))
-      return Bot.makeLog("warn", "找不到对应 QQBot", appid)
+      return Bot.makeLog("warn", "找不到对应Bot", appid)
     if ("plain_token" in req.body?.d)
-      return this.makeWebHookSign(this.appid[appid].uin, req, this.appid[appid].info.secret)
+      return this.makeWebHookSign(req, this.appid[appid].info.secret)
     if ("t" in req.body)
       this.appid[appid].sdk.dispatchEvent(req.body.t, req.body)
-    req.res.send({ code: 0 })
+    req.res.sendStatus(200)
   }
 
   async load() {
     Bot.express.use(`/${this.name}`, this.makeWebHook.bind(this))
-    Bot.express.quiet.push(`/${this.name}`)
     for (const token of config.token)
       await Bot.sleep(5000, this.connect(token))
   }
@@ -1801,4 +1745,3 @@ export class QQBotAdapter extends plugin {
 
 const endTime = new Date()
 logger.info(logger.green(`- QQBot 适配器插件 加载完成! 耗时：${endTime - startTime}ms`))
-
