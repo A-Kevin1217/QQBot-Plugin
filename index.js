@@ -170,7 +170,7 @@ const adapter = new class QQBotAdapter {
           message: button.callback,
           message_id: data._ret_id
         }
-        setTimeout(() => delete data.bot.callback[msg.id], 300000)
+        // setTimeout(() => delete data.bot.callback[msg.id], 300000)
       } else {
         msg.action = {
           type: 2,
