@@ -4,7 +4,7 @@ import QRCode from 'qrcode'
 import { join } from 'node:path'
 import imageSize from 'image-size'
 import { randomUUID } from 'node:crypto'
-import { encode as encodeSilk, isSilk } from "silk-wasm"
+import { encode as encodeSilk } from 'silk-wasm'
 import {
   Dau,
   importJS,
@@ -41,63 +41,43 @@ const adapter = new class QQBotAdapter {
 
     if (typeof config.toQRCode == 'boolean') {
       this.toQRCodeRegExp = config.toQRCode ? /(?<!\[(.*?)\]\()https?:\/\/[-\w_]+(\.[-\w_]+)+([-\w.,@?^=%&:/~+#]*[-\w@?^=%&/~+#])?/g : false
-    } else if (config.toQRCode == 'url') {
-      this.toQRCodeRegExp = false
     } else {
       this.toQRCodeRegExp = new RegExp(config.toQRCode, 'g')
     }
 
-    this.sep = ":"
-    if (process.platform === "win32")
-      this.sep = ""
-    this.bind_user = {}
-    this.appid = {}
+    this.sep = config.sep || ((process.platform == 'win32') && '') || ':'
   }
 
   async makeRecord(file) {
-    if (config.toBotUpload) for (const i of Bot.uin) {
-      if (!Bot[i].uploadRecord) continue
-      try {
-        const url = await Bot[i].uploadRecord(file)
-        if (url) return url
-      } catch (err) {
-        Bot.makeLog("error", ["Bot", i, "语音上传错误", file, err])
+    if (config.toBotUpload) {
+      for (const i of Bot.uin) {
+        if (!Bot[i].uploadRecord) continue
+        try {
+          const url = await Bot[i].uploadRecord(file)
+          if (url) return url
+        } catch (err) {
+          Bot.makeLog('error', ['Bot', i, '语音上传错误', file, err])
+        }
       }
     }
-    const buffer = await Bot.Buffer(file)
-    if (!Buffer.isBuffer(buffer)) return file
-    if (isSilk(buffer)) return buffer
 
-    const convFile = path.join("temp", ulid())
+    const inputFile = join('temp', randomUUID())
+    const pcmFile = join('temp', randomUUID())
 
     try {
-      await fs.writeFile(convFile, buffer)
-      await Bot.exec(`ffmpeg -i "${convFile}" -f s16le -ar 48000 -ac 1 "${convFile}.pcm"`)
-      file = Buffer.from((await encodeSilk(await fs.readFile(`${convFile}.pcm`), 48000)).data)
+      fs.writeFileSync(inputFile, await Bot.Buffer(file))
+      await Bot.exec(`ffmpeg -i "${inputFile}" -f s16le -ar 48000 -ac 1 "${pcmFile}"`)
+      file = Buffer.from((await encodeSilk(fs.readFileSync(pcmFile), 48000)).data)
     } catch (err) {
       logger.error(`silk 转码错误：${err}`)
     }
 
-    for (const i of [convFile, `${convFile}.pcm`])
-      fs.unlink(i).catch(() => { })
-
+    for (const i of [inputFile, pcmFile]) {
+      try {
+        fs.unlinkSync(i)
+      } catch (err) { }
+    }
     return file
-  }
-
-  convertURL(url) {
-    if (url == null) return '';
-    const urlStr = String(url);
-    const parts = urlStr.split('://');
-    if (parts.length === 1) return urlStr.toUpperCase();
-    const protocol = parts[0].toLowerCase();
-    const rest = parts.slice(1).join('://');
-    const [hostPart, remaining = ''] = rest.split(/[/?#]/);
-    const separatorIndex = rest.indexOf(hostPart) + hostPart.length;
-    return (
-      protocol + '://' +
-      hostPart.toUpperCase() +
-      rest.slice(separatorIndex)
-    );
   }
 
   async makeQRCode(data) {
@@ -190,7 +170,7 @@ const adapter = new class QQBotAdapter {
           message: button.callback,
           message_id: data._ret_id
         }
-        // setTimeout(() => delete data.bot.callback[msg.id], 300000)
+        setTimeout(() => delete data.bot.callback[msg.id], 300000)
       } else {
         msg.action = {
           type: 2,
@@ -671,13 +651,6 @@ const adapter = new class QQBotAdapter {
             message.push(msg)
             i.text = i.text.replace(url, '[链接(请扫码查看)]')
           }
-        } else if (config.toQRCode == 'url') {
-          const match = i.text.match(/(?<!\[(.*?)\]\()https?:\/\/[-\w_]+(\.[-\w_]+)+([-\w.,@?^=%&:/~+#]*[-\w@?^=%&/~+#])?/g)
-          if (match) {
-            for (const url of match) {
-              i.text = i.text.replace(url, this.convertURL(url))
-            }
-          }
         }
       }
 
@@ -863,13 +836,6 @@ const adapter = new class QQBotAdapter {
             message = []
             i.text = i.text.replace(url, '[链接(请扫码查看)]')
           }
-        } else if (config.toQRCode == 'url') {
-          const match = i.text.match(/(?<!\[(.*?)\]\()https?:\/\/[-\w_]+(\.[-\w_]+)+([-\w.,@?^=%&:/~+#]*[-\w@?^=%&/~+#])?/g)
-          if (match) {
-            for (const url of match) {
-              i.text = i.text.replace(url, this.convertURL(url))
-            }
-          }
         }
       }
 
@@ -973,7 +939,7 @@ const adapter = new class QQBotAdapter {
 
   pickFriend(id, user_id) {
     if (config.toQQUin && userIdCache[user_id]) user_id = userIdCache[user_id]
-    if (user_id?.startsWith('qg_')) return this.pickGuildFriend(id, user_id)
+    if (user_id.startsWith('qg_')) return this.pickGuildFriend(id, user_id)
 
     const i = {
       ...Bot[id].fl.get(user_id),
@@ -993,7 +959,7 @@ const adapter = new class QQBotAdapter {
     if (config.toQQUin && userIdCache[user_id]) {
       user_id = userIdCache[user_id]
     }
-    if (user_id?.startsWith('qg_')) { return this.pickGuildMember(id, group_id, user_id) }
+    if (user_id.startsWith('qg_')) { return this.pickGuildMember(id, group_id, user_id) }
     const i = {
       ...Bot[id].fl.get(user_id),
       ...Bot[id].gml.get(group_id)?.get(user_id),
@@ -1009,7 +975,7 @@ const adapter = new class QQBotAdapter {
   }
 
   pickGroup(id, group_id) {
-    if (group_id?.startsWith?.('qg_')) { return this.pickGuild(id, group_id) }
+    if (group_id.startsWith?.('qg_')) { return this.pickGuild(id, group_id) }
     const i = {
       ...Bot[id].gl.get(group_id),
       self_id: id,
@@ -1421,6 +1387,7 @@ const adapter = new class QQBotAdapter {
         })
       },
 
+      uin: id,
       info: {
         id, ...opts,
         avatar: `https://q.qlogo.cn/g?b=qq&s=0&nk=${this.uin}`,
@@ -1518,10 +1485,14 @@ const adapter = new class QQBotAdapter {
 
   async load() {
     Bot.express.use(`/${this.name}`, this.makeWebHook.bind(this))
-    for (const token of config.token)
-      await Bot.sleep(5000, this.connect(token))
+    for (const token of config.token) {
+      await new Promise(resolve => {
+        adapter.connect(token).then(resolve)
+        setTimeout(resolve, 5000)
+      })
+    }
   }
-}
+}()
 
 Bot.adapter.push(adapter)
 

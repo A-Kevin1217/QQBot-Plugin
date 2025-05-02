@@ -113,7 +113,7 @@ TRSS-Yunzai QQBot 适配器 插件
 #QQBot设置114:514:1919:810:2
 ```
 
-需要启用公网 HTTPS，开放平台添加 url/QQBot
+公网 HTTPS 反代 url/QQBot 填入开放平台
 
 ## 使用教程
 
