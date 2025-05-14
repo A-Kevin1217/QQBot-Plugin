@@ -142,40 +142,87 @@ const adapter = new class QQBotAdapter {
 
   makeButton(data, button) {
     const msg = {
-      id: button.id || randomUUID(),
+      id: randomUUID(),
       render_data: {
         label: button.text,
-        visited_label: button.clicked_text || button.text,
-        style: button.style ?? 1, // 0: 灰色线框, 1: 蓝色线框
+        visited_label: button.clicked_text,
+        style: button.style ?? 1,
         ...button.QQBot?.render_data
       }
     }
 
-    // 构造 action
-    msg.action = {
-      type: button.action_type ?? (button.input ? 2 : button.callback ? 1 : button.link ? 0 : 0),
-      data: button.data || button.input || button.callback || button.link || '',
-      permission: {
-        type: button.permission_type ?? (button.permission === 'admin' ? 1 : button.permission === undefined ? 2 : 0),
-        specify_user_ids: Array.isArray(button.specify_user_ids) ? button.specify_user_ids : [],
-        specify_role_ids: Array.isArray(button.specify_role_ids) ? button.specify_role_ids : []
-      },
-      reply: button.reply ?? false,
-      enter: button.enter ?? false,
-      anchor: button.anchor ?? 0,
-      click_limit: button.click_limit ?? undefined,
-      at_bot_show_channel_list: button.at_bot_show_channel_list ?? false,
-      unsupport_tips: button.unsupport_tips || '当前客户端不支持此操作',
-      ...button.QQBot?.action
-    }
+    if (button.input) {
+      msg.action = {
+        type: 2,
+        permission: { type: 2 },
+        data: button.input,
+        enter: button.send,
+        reply: button.reply ?? false,
+        anchor: button.anchor ?? 0,
+        click_limit: button.click_limit ?? undefined,
+        at_bot_show_channel_list: button.at_bot_show_channel_list ?? false,
+        unsupport_tips: button.unsupport_tips || '当前客户端不支持此操作',
+        ...button.QQBot?.action
+      }
+    } else if (button.callback) {
+      if (config.toCallback) {
+        msg.action = {
+          type: 1,
+          permission: { type: 2 },
+          reply: button.reply ?? false,
+          enter: button.enter ?? false,
+          anchor: button.anchor ?? 0,
+          click_limit: button.click_limit ?? undefined,
+          at_bot_show_channel_list: button.at_bot_show_channel_list ?? false,
+          unsupport_tips: button.unsupport_tips || '当前客户端不支持此操作',
+          ...button.QQBot?.action
+        }
+        if (!Array.isArray(data._ret_id)) data._ret_id = []
 
-    // 兼容旧的 permission 逻辑
+        data.bot.callback[msg.id] = {
+          id: data.message_id,
+          user_id: data.user_id,
+          group_id: data.group_id,
+          message: button.callback,
+          message_id: data._ret_id
+        }
+        // setTimeout(() => delete data.bot.callback[msg.id], 300000)
+      } else {
+        msg.action = {
+          type: 2,
+          permission: { type: 2 },
+          data: button.callback,
+          enter: true,
+          reply: button.reply ?? false,
+          anchor: button.anchor ?? 0,
+          click_limit: button.click_limit ?? undefined,
+          at_bot_show_channel_list: button.at_bot_show_channel_list ?? false,
+          unsupport_tips: button.unsupport_tips || '当前客户端不支持此操作',
+          ...button.QQBot?.action
+        }
+      }
+    } else if (button.link) {
+      msg.action = {
+        type: 0,
+        permission: { type: 2 },
+        data: button.link,
+        reply: button.reply ?? false,
+        enter: button.enter ?? false,
+        anchor: button.anchor ?? 0,
+        click_limit: button.click_limit ?? undefined,
+        at_bot_show_channel_list: button.at_bot_show_channel_list ?? false,
+        unsupport_tips: button.unsupport_tips || '当前客户端不支持此操作',
+        ...button.QQBot?.action
+      }
+    } else return false
+
     if (button.permission) {
-      if (button.permission === 'admin') {
+      if (button.permission == 'admin') {
         msg.action.permission.type = 1
-      } else if (Array.isArray(button.permission)) {
+      } else {
         msg.action.permission.type = 0
         msg.action.permission.specify_user_ids = []
+        if (!Array.isArray(button.permission)) button.permission = [button.permission]
         for (let id of button.permission) {
           if (config.toQQUin && userIdCache[id]) id = userIdCache[id]
           msg.action.permission.specify_user_ids.push(id.replace(`${data.self_id}${this.sep}`, ''))
