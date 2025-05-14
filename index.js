@@ -153,7 +153,7 @@ const adapter = new class QQBotAdapter {
 
     if (button.input) {
       msg.action = {
-        type: 2,
+        type: button.type ?? 2,
         permission: { type: 2 },
         data: button.input,
         enter: button.send,
@@ -167,7 +167,7 @@ const adapter = new class QQBotAdapter {
     } else if (button.callback) {
       if (config.toCallback) {
         msg.action = {
-          type: 1,
+          type: button.type ?? 1,
           permission: { type: 2 },
           reply: button.reply ?? false,
           enter: button.enter ?? false,
@@ -189,7 +189,7 @@ const adapter = new class QQBotAdapter {
         // setTimeout(() => delete data.bot.callback[msg.id], 300000)
       } else {
         msg.action = {
-          type: 2,
+          type: button.type ?? 2,
           permission: { type: 2 },
           data: button.callback,
           enter: true,
@@ -203,7 +203,7 @@ const adapter = new class QQBotAdapter {
       }
     } else if (button.link) {
       msg.action = {
-        type: 0,
+        type: button.type ?? 0,
         permission: { type: 2 },
         data: button.link,
         reply: button.reply ?? false,
