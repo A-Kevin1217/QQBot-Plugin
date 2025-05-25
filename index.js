@@ -134,6 +134,23 @@ const adapter = new class QQBotAdapter {
     image.width = Math.floor(image.width * config.markdownImgScale)
     image.height = Math.floor(image.height * config.markdownImgScale)
 
+    if (Handler.has('QQBot.makeMarkdownImage')) {
+      const res = await Handler.call(
+        'QQBot.makeMarkdownImage',
+        data,
+        {
+          image,
+          buffer,
+          file,
+          summary,
+          config
+        }
+      )
+      if (res) {
+        typeof res == 'object' ? Object.assign(image, res) : image.url = res
+      }
+    }
+
     return {
       des: `![${summary} #${image.width || 0}px #${image.height || 0}px]`,
       url: `(${image.url})`
@@ -1507,7 +1524,7 @@ const adapter = new class QQBotAdapter {
       return this.makeWebHookSign(req, this.appid[appid].info.secret)
     if ("t" in req.body)
       this.appid[appid].sdk.dispatchEvent(req.body.t, req.body)
-    req.res.send({code:0})
+    req.res.send({ code: 0 })
   }
 
   async load() {
