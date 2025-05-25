@@ -1113,7 +1113,20 @@ const adapter = new class QQBotAdapter {
       sendMsg: msg => this.sendGuildMsg(i, msg),
       recallMsg: (message_id, hide) => this.recallGuildMsg(i, message_id, hide),
       pickMember: user_id => this.pickGuildMember(id, group_id, user_id),
-      getMemberMap: () => i.bot.gml.get(group_id)
+      getMemberMap: () => i.bot.gml.get(group_id),
+      createChannel: (channelInfo) => this.createChannel(i, channelInfo)
+    }
+  }
+
+  // 创建子频道
+  async createChannel(data, channelInfo) {
+    try {
+      Bot.makeLog('info', `创建子频道：[${data.guild_id}] ${JSON.stringify(channelInfo)}`, data.self_id)
+      const result = await data.bot.sdk.createChannel(data.guild_id, channelInfo)
+      return result
+    } catch (err) {
+      Bot.makeLog('error', ['创建子频道错误', channelInfo, err], data.self_id)
+      return false
     }
   }
 
