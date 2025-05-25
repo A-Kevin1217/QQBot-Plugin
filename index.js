@@ -821,6 +821,7 @@ const adapter = new class QQBotAdapter {
     const messages = []
     let message = []
     let reply
+    let button = []
     for (let i of Array.isArray(msg) ? msg : [msg]) {
       if (typeof i == 'object') { i = { ...i } } else { i = { type: 'text', text: i } }
 
@@ -855,6 +856,7 @@ const adapter = new class QQBotAdapter {
           if (typeof i.data == 'object') { i = { type: 'markdown', ...i.data } } else { i = { type: 'markdown', content: i.data } }
           break
         case 'button':
+          config.sendButton && button.push(...this.makeButtons(data, i.data))
           continue
         case 'node':
           for (const { message } of i.data) { messages.push(...(await this.makeGuildMsg(data, message))) }
@@ -889,6 +891,14 @@ const adapter = new class QQBotAdapter {
     if (message.length) {
       messages.push(message)
     }
+    
+    while (button.length) {
+      messages.push([{
+        type: 'keyboard',
+        content: { rows: button.splice(0, 5) }
+      }])
+    }
+    
     if (reply) {
       for (const i of messages) i.unshift(reply)
     }
