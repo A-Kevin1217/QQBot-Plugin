@@ -835,6 +835,13 @@ const adapter = new class QQBotAdapter {
           break
         case 'image':
           message.push(i)
+          if (button.length) {
+            message.push({
+              type: 'keyboard',
+              content: { rows: button }
+            })
+            button = []
+          }
           messages.push(message)
           message = []
           continue
@@ -878,6 +885,13 @@ const adapter = new class QQBotAdapter {
           for (const url of match) {
             const msg = segment.image(await this.makeQRCode(url))
             message.push(msg)
+            if (button.length) {
+              message.push({
+                type: 'keyboard',
+                content: { rows: button }
+              })
+              button = []
+            }
             messages.push(message)
             message = []
             i.text = i.text.replace(url, '[链接(请扫码查看)]')
@@ -889,14 +903,21 @@ const adapter = new class QQBotAdapter {
     }
 
     if (message.length) {
+      if (button.length) {
+        message.push({
+          type: 'keyboard',
+          content: { rows: button }
+        })
+      }
       messages.push(message)
-    }
-    
-    while (button.length) {
-      messages.push([{
-        type: 'keyboard',
-        content: { rows: button.splice(0, 5) }
-      }])
+    } else if (button.length) {
+      messages.push([
+        { type: 'text', text: ' ' },
+        {
+          type: 'keyboard',
+          content: { rows: button }
+        }
+      ])
     }
     
     if (reply) {
