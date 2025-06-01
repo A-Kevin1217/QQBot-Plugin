@@ -1417,10 +1417,90 @@ const adapter = new class QQBotAdapter {
         break
       default:
         // console.log('event', event)
-        Bot.makeLog('warn', ['未知通知', event], id)
+        Bot.makeLog('debug', ['未知通知', event], id)
     }
 
     // Bot.em(`${data.post_type}.${data.notice_type}.${data.sub_type}`, data)
+  }
+
+  makeForumPost(id, event) {
+    const data = {
+      raw: event,
+      bot: Bot[id],
+      self_id: id,
+      post_type: 'forum',
+      event_type: 'FORUM_POST_CREATE',
+      channel_id: event.channel_id,
+      thread_id: event.thread_id,
+      user_id: event.author?.id,
+      content: event.content,
+      timestamp: event.timestamp
+    }
+
+    Bot.makeLog('info', [`论坛帖子创建事件：[频道:${data.channel_id}, 主题:${data.thread_id}]`, event], id)
+    
+    // 触发事件
+    Bot.em('forum.post.create', data)
+  }
+
+  makeForumPostDelete(id, event) {
+    const data = {
+      raw: event,
+      bot: Bot[id],
+      self_id: id,
+      post_type: 'forum',
+      event_type: 'FORUM_POST_DELETE',
+      channel_id: event.channel_id,
+      thread_id: event.thread_id,
+      user_id: event.operator?.id,
+      timestamp: event.timestamp
+    }
+
+    Bot.makeLog('info', [`论坛帖子删除事件：[频道:${data.channel_id}, 主题:${data.thread_id}]`, event], id)
+    
+    // 触发事件
+    Bot.em('forum.post.delete', data)
+  }
+
+  makeForumReply(id, event) {
+    const data = {
+      raw: event,
+      bot: Bot[id],
+      self_id: id,
+      post_type: 'forum',
+      event_type: 'FORUM_REPLY_CREATE',
+      channel_id: event.channel_id,
+      thread_id: event.thread_id,
+      reply_id: event.reply_id,
+      user_id: event.author?.id,
+      content: event.content,
+      timestamp: event.timestamp
+    }
+
+    Bot.makeLog('info', [`论坛回复创建事件：[频道:${data.channel_id}, 主题:${data.thread_id}, 回复:${data.reply_id}]`, event], id)
+    
+    // 触发事件
+    Bot.em('forum.reply.create', data)
+  }
+
+  makeForumReplyDelete(id, event) {
+    const data = {
+      raw: event,
+      bot: Bot[id],
+      self_id: id,
+      post_type: 'forum',
+      event_type: 'FORUM_REPLY_DELETE',
+      channel_id: event.channel_id,
+      thread_id: event.thread_id,
+      reply_id: event.reply_id,
+      user_id: event.operator?.id,
+      timestamp: event.timestamp
+    }
+
+    Bot.makeLog('info', [`论坛回复删除事件：[频道:${data.channel_id}, 主题:${data.thread_id}, 回复:${data.reply_id}]`, event], id)
+    
+    // 触发事件
+    Bot.em('forum.reply.delete', data)
   }
 
   getFriendMap(id) {
@@ -1506,6 +1586,18 @@ const adapter = new class QQBotAdapter {
 
       dau: new Dau(id, this.sep, config.dauDB),
 
+      // 获取频道线程列表
+      async getChannelThreads(channel_id) {
+        const { data: result } = await this.sdk.request.get(`/channels/${channel_id}/threads`)
+        return result
+      },
+
+      // 获取频道线程信息
+      async getChannelThreadInfo(channel_id, thread_id) {
+        const { data: result } = await this.sdk.request.get(`/channels/${channel_id}/threads/${thread_id}`)
+        return result
+      },
+
       callback: {}
     }
 
@@ -1542,6 +1634,10 @@ const adapter = new class QQBotAdapter {
 
     Bot[id].sdk.on('message', event => this.makeMessage(id, event))
     Bot[id].sdk.on('notice', event => this.makeNotice(id, event))
+    Bot[id].sdk.on('FORUM_POST_CREATE', event => this.makeForumPost(id, event))
+    Bot[id].sdk.on('FORUM_POST_DELETE', event => this.makeForumPostDelete(id, event))
+    Bot[id].sdk.on('FORUM_REPLY_CREATE', event => this.makeForumReply(id, event))
+    Bot[id].sdk.on('FORUM_REPLY_DELETE', event => this.makeForumReplyDelete(id, event))
 
     Bot.makeLog("mark", `${this.name}(${this.id}) ${this.version} ${Bot[id].nickname} 已连接`, id)
     Bot.em(`connect.${id}`, { self_id: id })
