@@ -1424,20 +1424,61 @@ const adapter = new class QQBotAdapter {
   }
 
   makeForumPost(id, event) {
+    const eventData = event.d || event
     const data = {
       raw: event,
       bot: Bot[id],
       self_id: id,
       post_type: 'forum',
       event_type: 'FORUM_POST_CREATE',
-      channel_id: event.channel_id,
-      thread_id: event.thread_id,
-      user_id: event.author?.id,
-      content: event.content,
-      timestamp: event.timestamp
+      guild_id: eventData.guild_id,
+      channel_id: eventData.channel_id,
+      thread_id: eventData.post_info?.thread_id,
+      post_id: eventData.post_info?.post_id,
+      user_id: eventData.author_id,
+      content: eventData.post_info?.content,
+      timestamp: eventData.post_info?.date_time
     }
 
-    Bot.makeLog('info', [`论坛帖子创建事件：[频道:${data.channel_id}, 主题:${data.thread_id}]`, event], id)
+    // 获取帖子详细信息以显示标题和内容
+    this.getChannelThreadInfo(data.channel_id, data.thread_id).then(threadInfo => {
+      const thread = threadInfo?.thread
+      const title = thread?.thread_info?.title || '无标题'
+      
+      // 解析帖子内容
+      let contentText = ''
+      try {
+        const content = thread?.thread_info?.content || data.content
+        if (content) {
+          const contentObj = JSON.parse(content)
+          if (contentObj.paragraphs && contentObj.paragraphs.length > 0) {
+            contentText = contentObj.paragraphs
+              .map(p => p.elems?.map(e => e.text?.text || '').join('') || '')
+              .join('')
+              .trim()
+            
+            if (contentText && contentText.length > 0) {
+              contentText = contentText.substring(0, 100) // 增加内容长度限制
+            }
+          }
+        }
+      } catch (e) {
+        // JSON解析失败，尝试直接解析为文本
+        const rawContent = String(thread?.thread_info?.content || data.content || '').trim()
+        if (rawContent && rawContent.length > 0 && !/^[\{\[\<]/.test(rawContent)) {
+          contentText = rawContent.substring(0, 100)
+        }
+      }
+      
+      const logMessage = contentText 
+        ? `论坛帖子创建：「${title}」${contentText}${contentText.length >= 100 ? '...' : ''}`
+        : `论坛帖子创建：「${title}」`
+      
+      Bot.makeLog('info', [logMessage, event], id)
+    }).catch(err => {
+      // 获取详细信息失败时的备用日志
+      Bot.makeLog('info', [`论坛帖子创建事件：[频道:${data.channel_id}, 主题:${data.thread_id}, 帖子:${data.post_id}]`, event], id)
+    })
     
     // 触发事件
     Bot.em('forum.post.create', data)
