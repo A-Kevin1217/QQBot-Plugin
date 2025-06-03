@@ -71,7 +71,22 @@ const adapter = new class QQBotAdapter {
 
     try {
       fs.writeFileSync(inputFile, await Bot.Buffer(file))
-      await Bot.exec(`ffmpeg -i "${inputFile}" -f s16le -ar 48000 -ac 1 "${pcmFile}"`)
+      await new Promise((resolve, reject) => {
+        const { exec } = require('node:child_process')
+        const ffmpegProcess = exec(`ffmpeg -i "${inputFile}" -f s16le -ar 48000 -ac 1 "${pcmFile}"`)
+        
+        ffmpegProcess.on('exit', (code) => {
+          if (code === 0) {
+            resolve()
+          } else {
+            reject(new Error(`ffmpeg 进程退出，退出码: ${code}`))
+          }
+        })
+        
+        ffmpegProcess.on('error', (err) => {
+          reject(err)
+        })
+      })
       file = Buffer.from((await encodeSilk(fs.readFileSync(pcmFile), 48000)).data)
     } catch (err) {
       logger.error(`silk 转码错误：${err}`)
