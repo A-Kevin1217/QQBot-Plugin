@@ -71,22 +71,32 @@ const adapter = new class QQBotAdapter {
 
     try {
       fs.writeFileSync(inputFile, await Bot.Buffer(file))
+      
+      // 使用child_process的execFile函数异步执行ffmpeg
       await new Promise((resolve, reject) => {
-        const { exec } = require('node:child_process')
-        const ffmpegProcess = exec(`ffmpeg -i "${inputFile}" -f s16le -ar 48000 -ac 1 "${pcmFile}"`)
-        
-        ffmpegProcess.on('exit', (code) => {
-          if (code === 0) {
-            resolve()
-          } else {
-            reject(new Error(`ffmpeg 进程退出，退出码: ${code}`))
-          }
-        })
-        
-        ffmpegProcess.on('error', (err) => {
-          reject(err)
-        })
+        import('node:child_process').then(({ execFile }) => {
+          const ffmpegProcess = execFile('ffmpeg', [
+            '-i', inputFile,
+            '-f', 's16le',
+            '-ar', '48000',
+            '-ac', '1',
+            pcmFile
+          ])
+          
+          ffmpegProcess.on('exit', (code) => {
+            if (code === 0) {
+              resolve()
+            } else {
+              reject(new Error(`ffmpeg 进程退出，退出码: ${code}`))
+            }
+          })
+          
+          ffmpegProcess.on('error', (err) => {
+            reject(err)
+          })
+        }).catch(reject)
       })
+      
       file = Buffer.from((await encodeSilk(fs.readFileSync(pcmFile), 48000)).data)
     } catch (err) {
       logger.error(`silk 转码错误：${err}`)
