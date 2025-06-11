@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import imageSize from 'image-size'
 import { randomUUID } from 'node:crypto'
 import { encode as encodeSilk } from 'silk-wasm'
+import os from 'node:os'
 import {
   Dau,
   importJS,
@@ -72,9 +73,13 @@ const adapter = new class QQBotAdapter {
     try {
       fs.writeFileSync(inputFile, await Bot.Buffer(file))
       
+      // 获取CPU核心数
+      const cpuCount = os.cpus().length
+      
       // 使用child_process的execFile函数异步执行ffmpeg
       await new Promise((resolve, reject) => {
         import('node:child_process').then(({ execFile }) => {
+          // 创建ffmpeg进程
           const ffmpegProcess = execFile('ffmpeg', [
             '-i', inputFile,
             '-f', 's16le',
@@ -82,6 +87,20 @@ const adapter = new class QQBotAdapter {
             '-ac', '1',
             pcmFile
           ])
+          
+          // 设置ffmpeg进程使用最后一个CPU核心
+          if (process.platform !== 'win32') {
+            import('node:worker_threads').then(({ Worker }) => {
+              try {
+                // 在Linux/macOS上使用taskset命令设置CPU亲和性
+                execFile('taskset', ['-pc', String(cpuCount - 1), String(ffmpegProcess.pid)])
+              } catch (err) {
+                logger.warn(`设置ffmpeg进程CPU亲和性失败: ${err}`)
+              }
+            }).catch(err => {
+              logger.warn(`导入worker_threads模块失败: ${err}`)
+            })
+          }
           
           ffmpegProcess.on('exit', (code) => {
             if (code === 0) {
