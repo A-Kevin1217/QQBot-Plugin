@@ -341,7 +341,14 @@ const adapter = new class QQBotAdapter {
           content += `${des}${url}`
           break
         } case 'markdown':
-          if (typeof i.data == 'object') messages.push([{ type: 'markdown', ...i.data }])
+          if (typeof i.data == 'object') {
+            // 处理markdown对象，检查是否有hide_avatar_and_center参数
+            if (i.hide_avatar_and_center) {
+              messages.push([{ type: 'markdown', ...i.data, layout: "hide_avatar_and_center" }])
+            } else {
+              messages.push([{ type: 'markdown', ...i.data }])
+            }
+          }
           else content += i.data
           break
         case 'button':
@@ -365,7 +372,13 @@ const adapter = new class QQBotAdapter {
       }
     }
 
-    if (content) { messages.unshift([{ type: 'markdown', content }]) }
+    if (content) { 
+      messages.unshift([{ 
+        type: 'markdown', 
+        content,
+        ...(data.hide_avatar_and_center ? { layout: "hide_avatar_and_center" } : {})
+      }]) 
+    }
 
     if (button.length) {
       for (const i of messages) {
@@ -374,7 +387,11 @@ const adapter = new class QQBotAdapter {
       }
       while (button.length) {
         messages.push([
-          { type: 'markdown', content: ' ' },
+          { 
+            type: 'markdown', 
+            content: ' ',
+            ...(data.hide_avatar_and_center ? { layout: "hide_avatar_and_center" } : {})
+          },
           ...button.splice(0, 5)
         ])
       }
@@ -420,7 +437,8 @@ const adapter = new class QQBotAdapter {
           result.push({
             type: 'markdown',
             custom_template_id,
-            params: _.cloneDeep(params)
+            params: _.cloneDeep(params),
+            ...(data.hide_avatar_and_center ? { layout: "hide_avatar_and_center" } : {})
           })
           params = type == 1 ? _.cloneDeep(markdown_template.params) : []
           index = 0
@@ -454,7 +472,8 @@ const adapter = new class QQBotAdapter {
       result.push({
         type: 'markdown',
         custom_template_id,
-        params
+        params,
+        ...(data.hide_avatar_and_center ? { layout: "hide_avatar_and_center" } : {})
       })
     }
 
@@ -468,6 +487,18 @@ const adapter = new class QQBotAdapter {
     let content = ''
     let reply
     const length = markdown_template?.params?.length || config.customMD?.[data.self_id]?.keys?.length || config.markdown.template.length
+
+    // 检查是否存在hide_avatar_and_center参数并传递到data中
+    if (Array.isArray(msg)) {
+      for (const item of msg) {
+        if (item && typeof item === 'object' && item.hide_avatar_and_center) {
+          data.hide_avatar_and_center = true
+          break
+        }
+      }
+    } else if (msg && typeof msg === 'object' && msg.hide_avatar_and_center) {
+      data.hide_avatar_and_center = true
+    }
 
     for (let i of Array.isArray(msg) ? msg : [msg]) {
       if (typeof i == 'object') i = { ...i }
@@ -566,7 +597,14 @@ const adapter = new class QQBotAdapter {
           content = url
           break
         } case 'markdown':
-          if (typeof i.data == 'object') messages.push([{ type: 'markdown', ...i.data }])
+          if (typeof i.data == 'object') {
+            // 处理markdown对象，检查是否有hide_avatar_and_center参数
+            if (i.hide_avatar_and_center || data.hide_avatar_and_center) {
+              messages.push([{ type: 'markdown', ...i.data, layout: "hide_avatar_and_center" }])
+            } else {
+              messages.push([{ type: 'markdown', ...i.data }])
+            }
+          }
           else content += i.data
           break
         case 'button':
@@ -781,6 +819,18 @@ const adapter = new class QQBotAdapter {
           return false
         }
       }
+    }
+
+    // 检查hide_avatar_and_center参数并传递到data中
+    if (Array.isArray(msg)) {
+      for (const item of msg) {
+        if (item && typeof item === 'object' && item.hide_avatar_and_center) {
+          data.hide_avatar_and_center = true
+          break
+        }
+      }
+    } else if (msg && typeof msg === 'object' && msg.hide_avatar_and_center) {
+      data.hide_avatar_and_center = true
     }
 
     if (TmplPkg && TmplPkg?.Button && !data.toQQBotMD) {
