@@ -226,7 +226,8 @@ const adapter = new class QQBotAdapter {
         ...button.QQBot?.action
       }
     } else if (button.callback) {
-      if (config.toCallback) {
+      // 修改这里，对type=1的按钮也使用服务端回调机制
+      if (config.toCallback || button.type === 1) {
         msg.action = {
           type: button.type ?? 1,
           permission: { type: 2 },
