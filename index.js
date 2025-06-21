@@ -1350,7 +1350,19 @@ const adapter = new class QQBotAdapter {
         return
     }
 
-    data.bot.stat.recv_msg_cnt++
+    // 修复recv_msg_cnt的递增问题
+    try {
+      data.bot.stat.recv_msg_cnt++
+    } catch (err) {
+      // 如果直接递增失败，尝试使用赋值方式
+      try {
+        data.bot.stat.recv_msg_cnt = (data.bot.stat.recv_msg_cnt || 0) + 1
+      } catch (err2) {
+        // 忽略错误，确保程序继续运行
+        Bot.makeLog('debug', ['无法更新接收消息计数', err2], id)
+      }
+    }
+    
     Bot[data.self_id].dau.setDau('receive_msg', data)
     Bot.em(`${data.post_type}.${data.message_type}.${data.sub_type}`, data)
   }
