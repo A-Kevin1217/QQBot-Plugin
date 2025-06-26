@@ -10,6 +10,7 @@ import customMD from "customMD.vue";
 import mdSuffix from "mdSuffix.vue";
 import filterLog from "filterLog.vue";
 import btnSuffix from "btnSuffix.vue";
+import btnTemplate from "btnTemplate.vue";
 import token from "token.vue";
 import addDialog from "@addDialog";
 import message from "@message";
@@ -48,8 +49,8 @@ const state = ref({
   markdown: {},
   customMD: {},
   mdSuffix: {},
-  filterLog: {},
   btnSuffix: {},
+  btnTemplate: {},
   token: [],
 });
 
@@ -330,6 +331,15 @@ const group: PlusFormGroupRow[] = [
           xs: 23,
         },
       },
+      {
+        label: "模板按钮",
+        prop: "btnTemplate",
+        tooltip: "开放平台审核通过的模板按钮",
+        colProps: {
+          span: 11,
+          xs: 23,
+        },
+      },
     ],
   },
   {
@@ -490,6 +500,10 @@ const initData = {
     position: 1,
     values: [],
   },
+  btnTemplate: {
+    uin: "",
+    templateId: "",
+  },
   filterLog: {
     uin: "",
     val: [],
@@ -525,6 +539,10 @@ const getFormInline = (key: string | null, name: string) => {
         formInline.position = state.value.btnSuffix[key].position;
         formInline.values = state.value.btnSuffix[key].values;
         formInline.uin = key;
+        break;
+      case "btnTemplate":
+        formInline.uin = key;
+        formInline.templateId = state.value.btnTemplate[key];
         break;
       case "filterLog":
         formInline.uin = key;
@@ -576,6 +594,9 @@ const closeCallBack = ({ options, args }, key: string | null, name: string) => {
           position: formInline.position,
           values: formInline.values,
         };
+        break;
+      case "btnTemplate":
+        state.value.btnTemplate[key] = formInline.templateId;
         break;
       case "filterLog":
         state.value.filterLog[key] = formInline.val;
@@ -714,6 +735,25 @@ const showDialog = (title: string, key: string | null, content: any) => {
               class="button-new-tag ml-1"
               size="small"
               @click="showDialog('增加按钮附加值', null, btnSuffix)"
+            >
+              新增
+            </el-button>
+          </template>
+          <template #plus-field-btnTemplate>
+            <el-tag
+              v-for="(val, key) in state.btnTemplate"
+              :key="key"
+              class="mx-1 cursor-pointer mt-1"
+              closable
+              @close="closeTag('btnTemplate:' + key)"
+              @click="showDialog('修改模板按钮', key, btnTemplate)"
+            >
+              {{ key }}
+            </el-tag>
+            <el-button
+              class="button-new-tag ml-1"
+              size="small"
+              @click="showDialog('增加模板按钮', null, btnTemplate)"
             >
               新增
             </el-button>

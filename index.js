@@ -641,6 +641,21 @@ const adapter = new class QQBotAdapter {
       button.splice(position, 0, ...this.makeButtons(data, [btn]))
     }
 
+    // 添加模板按钮支持
+    if (template.length && config.btnTemplate[data.self_id]) {
+      // 如果存在模板按钮配置，则添加模板按钮
+      const templateId = config.btnTemplate[data.self_id]
+      if (templateId) {
+        // 添加模板按钮
+        messages.push([
+          ...this.makeMarkdownTemplate(data, [' ']),
+          { type: 'keyboard', id: templateId }
+        ])
+        // 如果有模板按钮，就不需要添加自定义按钮了
+        button.length = 0
+      }
+    }
+
     if (button.length) {
       for (const i of messages) {
         if (i[0].type == 'markdown') i.push(...button.splice(0, 5))

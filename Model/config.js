@@ -20,6 +20,7 @@ let { config, configSave } = await makeConfig('QQBot', {
   customMD: {},
   mdSuffix: {},
   btnSuffix: {},
+  btnTemplate: {},
   filterLog: {},
   simplifiedSdkLog: false,
   markdownImgScale: 1.0,
