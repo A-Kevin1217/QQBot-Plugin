@@ -641,9 +641,26 @@ const adapter = new class QQBotAdapter {
       button.splice(position, 0, ...this.makeButtons(data, [btn]))
     }
 
-    // 移除模板按钮支持代码，因为已经在sendMsg函数中统一处理了
-    // 添加一个标记，表示在makeMarkdownMsg中跳过模板按钮处理
-    data._skipTemplateBtn = true
+    // 添加模板按钮支持
+    if (template.length && config.btnTemplate[data.self_id]) {
+      const templateId = config.btnTemplate[data.self_id]
+      if (templateId) {
+        for (const msg of messages) {
+          if (msg[0].type === 'markdown') {
+            msg.push({ type: 'keyboard', id: templateId })
+            button.length = 0
+            break
+          }
+        }
+        if (button.length > 0) {
+          messages.push([
+            ...this.makeMarkdownTemplate(data, [' ']),
+            { type: 'keyboard', id: templateId }
+          ])
+          button.length = 0
+        }
+      }
+    }
 
     if (button.length) {
       for (const i of messages) {
@@ -788,11 +805,8 @@ const adapter = new class QQBotAdapter {
     // 检查是否配置了模板按钮
     const hasTemplateBtn = config.btnTemplate && config.btnTemplate[data.self_id]
     
-    // 标记是否已经处理过模板按钮
-    let templateBtnProcessed = false
-    
     // 如果是直接传入的消息数组，检查并应用模板按钮
-    if (Array.isArray(msg) && hasTemplateBtn && !data._skipTemplateBtn) {
+    if (Array.isArray(msg) && hasTemplateBtn) {
       const templateId = config.btnTemplate[data.self_id]
       // 查找markdown消息
       const mdMsg = msg.find(m => 
@@ -823,7 +837,6 @@ const adapter = new class QQBotAdapter {
           // 如果没有找到按钮但有markdown消息，直接添加模板按钮
           msg.push({ type: 'keyboard', id: templateId })
         }
-        templateBtnProcessed = true
       }
     }
 
@@ -877,38 +890,6 @@ const adapter = new class QQBotAdapter {
       if (config.markdown[data.self_id] == 'raw') msgs = await this.makeRawMarkdownMsg(data, msg)
       else msgs = await this.makeMarkdownMsg(data, msg)
 
-      // 如果需要应用模板按钮且之前没有处理过
-      if (hasTemplateBtn && !templateBtnProcessed && !data._skipTemplateBtn) {
-        const templateId = config.btnTemplate[data.self_id]
-        
-        // 处理所有消息数组
-        for (const msgArray of msgs) {
-          // 查找是否有markdown消息
-          const hasMd = msgArray.some(m => m.type === 'markdown')
-          
-          if (hasMd) {
-            // 移除所有按钮
-            const btnIndices = []
-            msgArray.forEach((m, idx) => {
-              if (m.type === 'button' || m.type === 'keyboard') {
-                btnIndices.push(idx)
-              }
-            })
-            
-            // 从后往前删除
-            for (let i = btnIndices.length - 1; i >= 0; i--) {
-              msgArray.splice(btnIndices[i], 1)
-            }
-            
-            // 添加模板按钮
-            msgArray.push({ type: 'keyboard', id: templateId })
-            break // 只处理第一个包含markdown的消息数组
-          }
-        }
-        
-        templateBtnProcessed = true
-      }
-
       const [mds, btns] = _.partition(msgs[0], v => v.type === 'markdown')
       if (mds.length > 1) {
         for (const idx in mds) {
@@ -920,36 +901,6 @@ const adapter = new class QQBotAdapter {
       }
     } else {
       msgs = await this.makeMsg(data, msg)
-      
-      // 如果需要应用模板按钮且之前没有处理过
-      if (hasTemplateBtn && !templateBtnProcessed && !data._skipTemplateBtn) {
-        const templateId = config.btnTemplate[data.self_id]
-        
-        // 处理所有消息数组
-        for (const msgArray of msgs) {
-          // 查找是否有markdown消息
-          const hasMd = msgArray.some(m => m.type === 'markdown')
-          
-          if (hasMd) {
-            // 移除所有按钮
-            const btnIndices = []
-            msgArray.forEach((m, idx) => {
-              if (m.type === 'button' || m.type === 'keyboard') {
-                btnIndices.push(idx)
-              }
-            })
-            
-            // 从后往前删除
-            for (let i = btnIndices.length - 1; i >= 0; i--) {
-              msgArray.splice(btnIndices[i], 1)
-            }
-            
-            // 添加模板按钮
-            msgArray.push({ type: 'keyboard', id: templateId })
-            break // 只处理第一个包含markdown的消息数组
-          }
-        }
-      }
     }
 
     if (await sendMsg() === false) {
@@ -1305,8 +1256,43 @@ const adapter = new class QQBotAdapter {
     }
     Bot.makeLog('info', `好友消息：[${data.user_id}] ${data.raw_message}`, data.self_id)
     
-    // 修改reply函数实现，使用统一的模板按钮处理逻辑
+    // 修改reply函数实现，添加对模板按钮的支持
     data.reply = async (msg) => {
+      // 检查是否配置了模板按钮
+      if (Array.isArray(msg) && config.btnTemplate && config.btnTemplate[data.self_id]) {
+        const templateId = config.btnTemplate[data.self_id]
+        // 查找markdown消息
+        const mdIndex = msg.findIndex(m => 
+          m.type === 'markdown' || 
+          (m.data && typeof m.data === 'object' && m.data.custom_template_id)
+        )
+        
+        if (mdIndex !== -1) {
+          // 找到所有按钮消息的索引
+          const btnIndices = []
+          msg.forEach((m, idx) => {
+            if (m.type === 'button' || 
+                (m.type === 'node' && m.data) || 
+                (Array.isArray(m.data) && m.data.some(b => b.type === 'button'))) {
+              btnIndices.push(idx)
+            }
+          })
+          
+          // 如果找到了按钮消息，移除它们并添加模板按钮
+          if (btnIndices.length > 0) {
+            // 从后往前删除，避免索引变化
+            for (let i = btnIndices.length - 1; i >= 0; i--) {
+              msg.splice(btnIndices[i], 1)
+            }
+            // 添加模板按钮
+            msg.push({ type: 'keyboard', id: templateId })
+          } else {
+            // 如果没有找到按钮但有markdown消息，直接添加模板按钮
+            msg.push({ type: 'keyboard', id: templateId })
+          }
+        }
+      }
+      
       return this.sendFriendMsg({
         ...data, user_id: event.sender.user_id
       }, msg, { id: data.message_id })
@@ -1333,8 +1319,43 @@ const adapter = new class QQBotAdapter {
     let logStat = filterLog.includes(_.trim(data.raw_message)) ? 'debug' : 'info'
     Bot.makeLog(logStat, `群消息：[${data.group_id}, ${data.user_id}] ${data.raw_message}`, data.self_id)
 
-    // 修改reply函数实现，使用统一的模板按钮处理逻辑
+    // 修改reply函数实现，添加对模板按钮的支持
     data.reply = async (msg) => {
+      // 检查是否配置了模板按钮
+      if (Array.isArray(msg) && config.btnTemplate && config.btnTemplate[data.self_id]) {
+        const templateId = config.btnTemplate[data.self_id]
+        // 查找markdown消息
+        const mdIndex = msg.findIndex(m => 
+          m.type === 'markdown' || 
+          (m.data && typeof m.data === 'object' && m.data.custom_template_id)
+        )
+        
+        if (mdIndex !== -1) {
+          // 找到所有按钮消息的索引
+          const btnIndices = []
+          msg.forEach((m, idx) => {
+            if (m.type === 'button' || 
+                (m.type === 'node' && m.data) || 
+                (Array.isArray(m.data) && m.data.some(b => b.type === 'button'))) {
+              btnIndices.push(idx)
+            }
+          })
+          
+          // 如果找到了按钮消息，移除它们并添加模板按钮
+          if (btnIndices.length > 0) {
+            // 从后往前删除，避免索引变化
+            for (let i = btnIndices.length - 1; i >= 0; i--) {
+              msg.splice(btnIndices[i], 1)
+            }
+            // 添加模板按钮
+            msg.push({ type: 'keyboard', id: templateId })
+          } else {
+            // 如果没有找到按钮但有markdown消息，直接添加模板按钮
+            msg.push({ type: 'keyboard', id: templateId })
+          }
+        }
+      }
+      
       return this.sendGroupMsg({
         ...data, group_id: event.group_id
       }, msg, { id: data.message_id })
@@ -1356,8 +1377,43 @@ const adapter = new class QQBotAdapter {
     }
     Bot.makeLog('info', `频道私聊消息：[${data.sender.nickname}(${data.user_id})] ${data.raw_message}`, data.self_id)
     
-    // 修改reply函数实现，使用统一的模板按钮处理逻辑
+    // 修改reply函数实现，添加对模板按钮的支持
     data.reply = async (msg) => {
+      // 检查是否配置了模板按钮
+      if (Array.isArray(msg) && config.btnTemplate && config.btnTemplate[data.self_id]) {
+        const templateId = config.btnTemplate[data.self_id]
+        // 查找markdown消息
+        const mdIndex = msg.findIndex(m => 
+          m.type === 'markdown' || 
+          (m.data && typeof m.data === 'object' && m.data.custom_template_id)
+        )
+        
+        if (mdIndex !== -1) {
+          // 找到所有按钮消息的索引
+          const btnIndices = []
+          msg.forEach((m, idx) => {
+            if (m.type === 'button' || 
+                (m.type === 'node' && m.data) || 
+                (Array.isArray(m.data) && m.data.some(b => b.type === 'button'))) {
+              btnIndices.push(idx)
+            }
+          })
+          
+          // 如果找到了按钮消息，移除它们并添加模板按钮
+          if (btnIndices.length > 0) {
+            // 从后往前删除，避免索引变化
+            for (let i = btnIndices.length - 1; i >= 0; i--) {
+              msg.splice(btnIndices[i], 1)
+            }
+            // 添加模板按钮
+            msg.push({ type: 'keyboard', id: templateId })
+          } else {
+            // 如果没有找到按钮但有markdown消息，直接添加模板按钮
+            msg.push({ type: 'keyboard', id: templateId })
+          }
+        }
+      }
+      
       return this.sendDirectMsg({
         ...data,
         user_id: event.user_id,
@@ -1391,8 +1447,43 @@ const adapter = new class QQBotAdapter {
     data.group_id = `qg_${event.guild_id}-${event.channel_id}`
     Bot.makeLog('info', `频道消息：[${data.group_id}, ${data.sender.nickname}(${data.user_id})] ${data.raw_message}`, data.self_id)
     
-    // 修改reply函数实现，使用统一的模板按钮处理逻辑
+    // 修改reply函数实现，添加对模板按钮的支持
     data.reply = async (msg) => {
+      // 检查是否配置了模板按钮
+      if (Array.isArray(msg) && config.btnTemplate && config.btnTemplate[data.self_id]) {
+        const templateId = config.btnTemplate[data.self_id]
+        // 查找markdown消息
+        const mdIndex = msg.findIndex(m => 
+          m.type === 'markdown' || 
+          (m.data && typeof m.data === 'object' && m.data.custom_template_id)
+        )
+        
+        if (mdIndex !== -1) {
+          // 找到所有按钮消息的索引
+          const btnIndices = []
+          msg.forEach((m, idx) => {
+            if (m.type === 'button' || 
+                (m.type === 'node' && m.data) || 
+                (Array.isArray(m.data) && m.data.some(b => b.type === 'button'))) {
+              btnIndices.push(idx)
+            }
+          })
+          
+          // 如果找到了按钮消息，移除它们并添加模板按钮
+          if (btnIndices.length > 0) {
+            // 从后往前删除，避免索引变化
+            for (let i = btnIndices.length - 1; i >= 0; i--) {
+              msg.splice(btnIndices[i], 1)
+            }
+            // 添加模板按钮
+            msg.push({ type: 'keyboard', id: templateId })
+          } else {
+            // 如果没有找到按钮但有markdown消息，直接添加模板按钮
+            msg.push({ type: 'keyboard', id: templateId })
+          }
+        }
+      }
+      
       return this.sendGuildMsg({
         ...data,
         guild_id: event.guild_id,
@@ -1547,8 +1638,43 @@ const adapter = new class QQBotAdapter {
         data.message_type = 'private'
         Bot.makeLog('info', [`好友按钮点击事件：[${data.user_id}]`, data.raw_message], data.self_id)
 
-        // 修改reply函数实现，使用统一的模板按钮处理逻辑
+        // 修改reply函数实现，添加对模板按钮的支持
         data.reply = async (msg) => {
+          // 检查是否配置了模板按钮
+          if (Array.isArray(msg) && config.btnTemplate && config.btnTemplate[data.self_id]) {
+            const templateId = config.btnTemplate[data.self_id]
+            // 查找markdown消息
+            const mdIndex = msg.findIndex(m => 
+              m.type === 'markdown' || 
+              (m.data && typeof m.data === 'object' && m.data.custom_template_id)
+            )
+            
+            if (mdIndex !== -1) {
+              // 找到所有按钮消息的索引
+              const btnIndices = []
+              msg.forEach((m, idx) => {
+                if (m.type === 'button' || 
+                    (m.type === 'node' && m.data) || 
+                    (Array.isArray(m.data) && m.data.some(b => b.type === 'button'))) {
+                  btnIndices.push(idx)
+                }
+              })
+              
+              // 如果找到了按钮消息，移除它们并添加模板按钮
+              if (btnIndices.length > 0) {
+                // 从后往前删除，避免索引变化
+                for (let i = btnIndices.length - 1; i >= 0; i--) {
+                  msg.splice(btnIndices[i], 1)
+                }
+                // 添加模板按钮
+                msg.push({ type: 'keyboard', id: templateId })
+              } else {
+                // 如果没有找到按钮但有markdown消息，直接添加模板按钮
+                msg.push({ type: 'keyboard', id: templateId })
+              }
+            }
+          }
+          
           return this.sendFriendMsg({ ...data, user_id: event.operator_id }, msg, { id: data.message_id })
         }
         
@@ -1558,8 +1684,43 @@ const adapter = new class QQBotAdapter {
         data.group_id = `${id}${this.sep}${event.group_id}`
         Bot.makeLog('info', [`群按钮点击事件：[${data.group_id}, ${data.user_id}]`, data.raw_message], data.self_id)
 
-        // 修改reply函数实现，使用统一的模板按钮处理逻辑
+        // 修改reply函数实现，添加对模板按钮的支持
         data.reply = async (msg) => {
+          // 检查是否配置了模板按钮
+          if (Array.isArray(msg) && config.btnTemplate && config.btnTemplate[data.self_id]) {
+            const templateId = config.btnTemplate[data.self_id]
+            // 查找markdown消息
+            const mdIndex = msg.findIndex(m => 
+              m.type === 'markdown' || 
+              (m.data && typeof m.data === 'object' && m.data.custom_template_id)
+            )
+            
+            if (mdIndex !== -1) {
+              // 找到所有按钮消息的索引
+              const btnIndices = []
+              msg.forEach((m, idx) => {
+                if (m.type === 'button' || 
+                    (m.type === 'node' && m.data) || 
+                    (Array.isArray(m.data) && m.data.some(b => b.type === 'button'))) {
+                  btnIndices.push(idx)
+                }
+              })
+              
+              // 如果找到了按钮消息，移除它们并添加模板按钮
+              if (btnIndices.length > 0) {
+                // 从后往前删除，避免索引变化
+                for (let i = btnIndices.length - 1; i >= 0; i--) {
+                  msg.splice(btnIndices[i], 1)
+                }
+                // 添加模板按钮
+                msg.push({ type: 'keyboard', id: templateId })
+              } else {
+                // 如果没有找到按钮但有markdown消息，直接添加模板按钮
+                msg.push({ type: 'keyboard', id: templateId })
+              }
+            }
+          }
+          
           return this.sendGroupMsg({ ...data, group_id: event.group_id }, msg, { id: data.message_id })
         }
         
