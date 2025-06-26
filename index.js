@@ -865,6 +865,41 @@ const adapter = new class QQBotAdapter {
     }
 
     const sendMsg = async () => {
+      // 在发送前检查并清理重复的模板按钮
+      if (hasTemplateBtn) {
+        const templateId = config.btnTemplate[data.self_id]
+        
+        for (const msgArray of msgs) {
+          // 检查是否有多个keyboard对象
+          const keyboardIndices = []
+          msgArray.forEach((item, index) => {
+            if (item.type === 'keyboard' && item.id === templateId) {
+              keyboardIndices.push(index)
+            }
+          })
+          
+          // 如果有多个keyboard，只保留第一个
+          if (keyboardIndices.length > 1) {
+            // 从后往前删除，避免索引变化
+            for (let i = keyboardIndices.length - 1; i > 0; i--) {
+              msgArray.splice(keyboardIndices[i], 1)
+            }
+          }
+          
+          // 检查是否有纯文本形式的keyboard对象
+          for (let i = 0; i < msgArray.length; i++) {
+            const item = msgArray[i]
+            if (item.type === 'text' && typeof item.text === 'string' && 
+                (item.text.includes('"type":"keyboard"') || 
+                 item.text.includes('"id":"' + templateId + '"'))) {
+              // 找到了文本形式的keyboard，删除它
+              msgArray.splice(i, 1)
+              i--
+            }
+          }
+        }
+      }
+      
       for (const i of msgs) {
         try {
           Bot.makeLog('debug', ['发送消息', i], data.self_id)
@@ -1075,6 +1110,41 @@ const adapter = new class QQBotAdapter {
     let msgs
 
     const sendMsg = async () => {
+      // 在发送前检查并清理重复的模板按钮
+      if (config.btnTemplate && config.btnTemplate[data.self_id]) {
+        const templateId = config.btnTemplate[data.self_id]
+        
+        for (const msgArray of msgs) {
+          // 检查是否有多个keyboard对象
+          const keyboardIndices = []
+          msgArray.forEach((item, index) => {
+            if (item.type === 'keyboard' && item.id === templateId) {
+              keyboardIndices.push(index)
+            }
+          })
+          
+          // 如果有多个keyboard，只保留第一个
+          if (keyboardIndices.length > 1) {
+            // 从后往前删除，避免索引变化
+            for (let i = keyboardIndices.length - 1; i > 0; i--) {
+              msgArray.splice(keyboardIndices[i], 1)
+            }
+          }
+          
+          // 检查是否有纯文本形式的keyboard对象
+          for (let i = 0; i < msgArray.length; i++) {
+            const item = msgArray[i]
+            if (item.type === 'text' && typeof item.text === 'string' && 
+                (item.text.includes('"type":"keyboard"') || 
+                 item.text.includes('"id":"' + templateId + '"'))) {
+              // 找到了文本形式的keyboard，删除它
+              msgArray.splice(i, 1)
+              i--
+            }
+          }
+        }
+      }
+      
       for (const i of msgs) {
         try {
           Bot.makeLog('debug', ['发送消息', i], data.self_id)
@@ -1584,6 +1654,25 @@ const adapter = new class QQBotAdapter {
     })
   }
 
+  // 过滤消息中的JSON字符串形式的模板按钮
+  filterTemplateButtonText(messages, self_id) {
+    if (!config.btnTemplate || !config.btnTemplate[self_id]) return messages;
+    
+    const templateId = config.btnTemplate[self_id];
+    const jsonPattern = new RegExp(`\\{"type":"keyboard","id":"${templateId}"\\}`, 'g');
+    
+    return messages.filter(msg => {
+      if (msg.type === 'text' && typeof msg.text === 'string') {
+        // 如果消息文本完全匹配JSON模板按钮格式，则过滤掉
+        if (msg.text.match(jsonPattern) || 
+            msg.text === `{"type":"keyboard","id":"${templateId}"}`) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }
+
   async makeMessage(id, event) {
     const data = {
       raw: event,
@@ -1606,6 +1695,9 @@ const adapter = new class QQBotAdapter {
           break
       }
     }
+    
+    // 过滤掉可能的JSON字符串形式的模板按钮
+    data.message = this.filterTemplateButtonText(data.message, id);
 
     switch (data.message_type) {
       case 'private':
@@ -1695,6 +1787,9 @@ const adapter = new class QQBotAdapter {
       }
     }
     event.reply(0)
+    
+    // 过滤掉可能的JSON字符串形式的模板按钮
+    data.message = this.filterTemplateButtonText(data.message, id);
 
     switch (data.message_type) {
       case 'direct':
