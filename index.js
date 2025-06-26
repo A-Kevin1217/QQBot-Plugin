@@ -645,18 +645,38 @@ const adapter = new class QQBotAdapter {
     if (template.length && config.btnTemplate[data.self_id]) {
       const templateId = config.btnTemplate[data.self_id]
       if (templateId) {
+        // 检查消息数组中是否已经包含了模板按钮
+        let hasTemplateBtn = false
         for (const msg of messages) {
-          if (msg[0].type === 'markdown') {
-            msg.push({ type: 'keyboard', id: templateId })
-            button.length = 0
-            break
+          for (const item of msg) {
+            if (item.type === 'keyboard' && item.id === templateId) {
+              hasTemplateBtn = true
+              break
+            }
           }
+          if (hasTemplateBtn) break
         }
-        if (button.length > 0) {
-          messages.push([
-            ...this.makeMarkdownTemplate(data, [' ']),
-            { type: 'keyboard', id: templateId }
-          ])
+        
+        // 如果没有找到模板按钮，则添加
+        if (!hasTemplateBtn) {
+          for (const msg of messages) {
+            if (msg[0].type === 'markdown') {
+              msg.push({ type: 'keyboard', id: templateId })
+              button.length = 0
+              break
+            }
+          }
+          
+          // 如果没有找到markdown消息，则创建新消息
+          if (button.length > 0) {
+            messages.push([
+              ...this.makeMarkdownTemplate(data, [' ']),
+              { type: 'keyboard', id: templateId }
+            ])
+            button.length = 0
+          }
+        } else {
+          // 如果已经有模板按钮，则清除自定义按钮
           button.length = 0
         }
       }
@@ -808,34 +828,47 @@ const adapter = new class QQBotAdapter {
     // 如果是直接传入的消息数组，检查并应用模板按钮
     if (Array.isArray(msg) && hasTemplateBtn) {
       const templateId = config.btnTemplate[data.self_id]
-      // 查找markdown消息
-      const mdMsg = msg.find(m => 
-        m.type === 'markdown' || 
-        (m.data && typeof m.data === 'object' && m.data.custom_template_id)
-      )
       
-      if (mdMsg) {
-        // 找到所有按钮消息的索引
-        const btnIndices = []
-        msg.forEach((m, idx) => {
-          if (m.type === 'button' || 
-              (m.type === 'node' && m.data) || 
-              (Array.isArray(m.data) && m.data.some(b => b.type === 'button'))) {
-            btnIndices.push(idx)
-          }
-        })
+      // 检查消息数组中是否已经包含了模板按钮
+      let hasTemplateBtnInMsg = false
+      for (const item of msg) {
+        if (item.type === 'keyboard' && item.id === templateId) {
+          hasTemplateBtnInMsg = true
+          break
+        }
+      }
+      
+      // 如果没有找到模板按钮，则处理
+      if (!hasTemplateBtnInMsg) {
+        // 查找markdown消息
+        const mdMsg = msg.find(m => 
+          m.type === 'markdown' || 
+          (m.data && typeof m.data === 'object' && m.data.custom_template_id)
+        )
         
-        // 如果找到了按钮消息，移除它们并添加模板按钮
-        if (btnIndices.length > 0) {
-          // 从后往前删除，避免索引变化
-          for (let i = btnIndices.length - 1; i >= 0; i--) {
-            msg.splice(btnIndices[i], 1)
+        if (mdMsg) {
+          // 找到所有按钮消息的索引
+          const btnIndices = []
+          msg.forEach((m, idx) => {
+            if (m.type === 'button' || 
+                (m.type === 'node' && m.data) || 
+                (Array.isArray(m.data) && m.data.some(b => b.type === 'button'))) {
+              btnIndices.push(idx)
+            }
+          })
+          
+          // 如果找到了按钮消息，移除它们并添加模板按钮
+          if (btnIndices.length > 0) {
+            // 从后往前删除，避免索引变化
+            for (let i = btnIndices.length - 1; i >= 0; i--) {
+              msg.splice(btnIndices[i], 1)
+            }
+            // 添加模板按钮
+            msg.push({ type: 'keyboard', id: templateId })
+          } else {
+            // 如果没有找到按钮但有markdown消息，直接添加模板按钮
+            msg.push({ type: 'keyboard', id: templateId })
           }
-          // 添加模板按钮
-          msg.push({ type: 'keyboard', id: templateId })
-        } else {
-          // 如果没有找到按钮但有markdown消息，直接添加模板按钮
-          msg.push({ type: 'keyboard', id: templateId })
         }
       }
     }
@@ -1290,6 +1323,14 @@ const adapter = new class QQBotAdapter {
             // 如果没有找到按钮但有markdown消息，直接添加模板按钮
             msg.push({ type: 'keyboard', id: templateId })
           }
+          
+          // 检查是否有单独的模板按钮消息，如果有则移除
+          const btnTemplateIndex = msg.findIndex(m => 
+            m.type === 'keyboard' && m.id === templateId && msg.length > 1
+          )
+          if (btnTemplateIndex !== -1) {
+            msg.splice(btnTemplateIndex, 1)
+          }
         }
       }
       
@@ -1353,6 +1394,14 @@ const adapter = new class QQBotAdapter {
             // 如果没有找到按钮但有markdown消息，直接添加模板按钮
             msg.push({ type: 'keyboard', id: templateId })
           }
+          
+          // 检查是否有单独的模板按钮消息，如果有则移除
+          const btnTemplateIndex = msg.findIndex(m => 
+            m.type === 'keyboard' && m.id === templateId && msg.length > 1
+          )
+          if (btnTemplateIndex !== -1) {
+            msg.splice(btnTemplateIndex, 1)
+          }
         }
       }
       
@@ -1410,6 +1459,14 @@ const adapter = new class QQBotAdapter {
           } else {
             // 如果没有找到按钮但有markdown消息，直接添加模板按钮
             msg.push({ type: 'keyboard', id: templateId })
+          }
+          
+          // 检查是否有单独的模板按钮消息，如果有则移除
+          const btnTemplateIndex = msg.findIndex(m => 
+            m.type === 'keyboard' && m.id === templateId && msg.length > 1
+          )
+          if (btnTemplateIndex !== -1) {
+            msg.splice(btnTemplateIndex, 1)
           }
         }
       }
@@ -1480,6 +1537,14 @@ const adapter = new class QQBotAdapter {
           } else {
             // 如果没有找到按钮但有markdown消息，直接添加模板按钮
             msg.push({ type: 'keyboard', id: templateId })
+          }
+          
+          // 检查是否有单独的模板按钮消息，如果有则移除
+          const btnTemplateIndex = msg.findIndex(m => 
+            m.type === 'keyboard' && m.id === templateId && msg.length > 1
+          )
+          if (btnTemplateIndex !== -1) {
+            msg.splice(btnTemplateIndex, 1)
           }
         }
       }
