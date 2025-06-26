@@ -642,25 +642,25 @@ const adapter = new class QQBotAdapter {
     }
 
     // 添加模板按钮支持
-    // if (template.length && config.btnTemplate[data.self_id]) {
-    //   const templateId = config.btnTemplate[data.self_id]
-    //   if (templateId) {
-    //     for (const msg of messages) {
-    //       if (msg[0].type === 'markdown') {
-    //         msg.push({ type: 'keyboard', id: templateId })
-    //         button.length = 0
-    //         break
-    //       }
-    //     }
-    //     if (button.length > 0) {
-    //       messages.push([
-    //         ...this.makeMarkdownTemplate(data, [' ']),
-    //         { type: 'keyboard', id: templateId }
-    //       ])
-    //       button.length = 0
-    //     }
-    //   }
-    // }
+    if (template.length && config.btnTemplate[data.self_id]) {
+      const templateId = config.btnTemplate[data.self_id]
+      if (templateId) {
+        for (const msg of messages) {
+          if (msg[0].type === 'markdown') {
+            msg.push({ type: 'keyboard', id: templateId })
+            button.length = 0
+            break
+          }
+        }
+        if (button.length > 0) {
+          messages.push([
+            ...this.makeMarkdownTemplate(data, [' ']),
+            { type: 'keyboard', id: templateId }
+          ])
+          button.length = 0
+        }
+      }
+    }
 
     if (button.length) {
       for (const i of messages) {
