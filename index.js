@@ -802,6 +802,44 @@ const adapter = new class QQBotAdapter {
     const rets = { message_id: [], data: [], error: [] }
     let msgs
 
+    // 检查是否配置了模板按钮
+    const hasTemplateBtn = config.btnTemplate && config.btnTemplate[data.self_id]
+    
+    // 如果是直接传入的消息数组，检查并应用模板按钮
+    if (Array.isArray(msg) && hasTemplateBtn) {
+      const templateId = config.btnTemplate[data.self_id]
+      // 查找markdown消息
+      const mdMsg = msg.find(m => 
+        m.type === 'markdown' || 
+        (m.data && typeof m.data === 'object' && m.data.custom_template_id)
+      )
+      
+      if (mdMsg) {
+        // 找到所有按钮消息的索引
+        const btnIndices = []
+        msg.forEach((m, idx) => {
+          if (m.type === 'button' || 
+              (m.type === 'node' && m.data) || 
+              (Array.isArray(m.data) && m.data.some(b => b.type === 'button'))) {
+            btnIndices.push(idx)
+          }
+        })
+        
+        // 如果找到了按钮消息，移除它们并添加模板按钮
+        if (btnIndices.length > 0) {
+          // 从后往前删除，避免索引变化
+          for (let i = btnIndices.length - 1; i >= 0; i--) {
+            msg.splice(btnIndices[i], 1)
+          }
+          // 添加模板按钮
+          msg.push({ type: 'keyboard', id: templateId })
+        } else {
+          // 如果没有找到按钮但有markdown消息，直接添加模板按钮
+          msg.push({ type: 'keyboard', id: templateId })
+        }
+      }
+    }
+
     const sendMsg = async () => {
       for (const i of msgs) {
         try {
