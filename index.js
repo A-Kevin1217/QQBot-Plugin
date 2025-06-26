@@ -645,14 +645,24 @@ const adapter = new class QQBotAdapter {
     if (template.length && config.btnTemplate[data.self_id]) {
       const templateId = config.btnTemplate[data.self_id]
       if (templateId) {
+        let foundMarkdown = false;
+        // 查找现有的markdown消息并添加模板按钮
         for (const msg of messages) {
           if (msg[0].type === 'markdown') {
             msg.push({ type: 'keyboard', id: templateId })
             button.length = 0
+            foundMarkdown = true;
             break
           }
         }
-        if (button.length > 0) {
+        
+        // 如果没有找到markdown消息，但有其他消息，添加到第一条消息
+        if (!foundMarkdown && messages.length > 0) {
+          messages[0].push({ type: 'keyboard', id: templateId })
+          button.length = 0
+        }
+        // 如果没有任何消息，但有按钮，创建一个新的消息
+        else if (!foundMarkdown && button.length > 0) {
           messages.push([
             ...this.makeMarkdownTemplate(data, [' ']),
             { type: 'keyboard', id: templateId }
