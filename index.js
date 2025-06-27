@@ -487,6 +487,34 @@ const adapter = new class QQBotAdapter {
     
     // 已经添加过模板按钮的标记
     let hasAddedTemplateBtn = false;
+    
+    // 检查消息是否为直接的segment.markdown形式
+    const isDirectMarkdown = Array.isArray(msg) && msg.length === 1 && msg[0].type === 'markdown';
+    
+    // 对于直接的markdown消息，特殊处理确保它们能获得按钮
+    if (isDirectMarkdown && !data._noTemplateBtn && config.btnTemplate && config.btnTemplate[data.self_id]) {
+      const markdownObj = msg[0];
+      
+      // 创建一个带模板按钮的消息组
+      const mdWithBtn = [
+        markdownObj,
+        { type: 'keyboard', id: config.btnTemplate[data.self_id] }
+      ];
+      
+      messages.push(mdWithBtn);
+      hasAddedTemplateBtn = true;
+      data._hasTemplateBtn = true; 
+      
+      // 如果只是单纯的markdown，直接返回附带按钮的消息
+      if (!msg[0].data?.custom_template_id) {
+        if (reply) {
+          for (const i of messages) {
+            i.unshift(reply);
+          }
+        }
+        return messages;
+      }
+    }
 
     for (let i of Array.isArray(msg) ? msg : [msg]) {
       if (typeof i == 'object') i = { ...i }
@@ -598,7 +626,18 @@ const adapter = new class QQBotAdapter {
               markdownObj.style = { layout: 'hide_avatar_and_center', ...markdownObj.style }
               delete markdownObj.hide_avatar_and_center
             }
-            messages.push([markdownObj])
+            
+            // 如果有模板按钮且未添加过，直接添加到这个markdown消息后
+            if (!hasAddedTemplateBtn && !data._hasTemplateBtn && config.btnTemplate && config.btnTemplate[data.self_id]) {
+              messages.push([
+                markdownObj, 
+                { type: 'keyboard', id: config.btnTemplate[data.self_id] }
+              ]);
+              hasAddedTemplateBtn = true;
+              data._hasTemplateBtn = true;
+            } else {
+              messages.push([markdownObj]);
+            }
           }
           else content += i.data
           break
@@ -621,6 +660,16 @@ const adapter = new class QQBotAdapter {
         default:
           content += this.makeMarkdownText(data, JSON.stringify(i), button)
       }
+    }
+
+    // 如果已经有了消息且已添加过模板按钮，不需要继续处理模板内容
+    if (hasAddedTemplateBtn && messages.length > 0) {
+      if (reply) {
+        for (const i of messages) {
+          i.unshift(reply);
+        }
+      }
+      return messages;
     }
 
     if (content) template.push(content)
@@ -847,15 +896,28 @@ const adapter = new class QQBotAdapter {
       );
     }
     
+    // 检查是否为segment.markdown形式的消息
+    const isSegmentMarkdown = Array.isArray(msg) && msg.length === 1 && msg[0].type === 'markdown';
+    
     // 检查是否配置了模板按钮
-    const hasTemplateBtn = config.btnTemplate && config.btnTemplate[data.self_id]
+    const hasTemplateBtn = config.btnTemplate && config.btnTemplate[data.self_id];
     
     // 检查消息是否已包含模板按钮
-    const hasKeyboardInMsg = Array.isArray(msg) && checkHasTemplateBtn(msg)
+    const hasKeyboardInMsg = Array.isArray(msg) && checkHasTemplateBtn(msg);
+    
+    // 对于segment.markdown形式的消息特殊处理，确保它能获得模板按钮
+    if (isSegmentMarkdown && hasTemplateBtn && !hasKeyboardInMsg && !data._noTemplateBtn) {
+      // 如果是直接的markdown消息且没有按钮，添加模板按钮
+      msg = [
+        msg[0],
+        { type: 'keyboard', id: config.btnTemplate[data.self_id] }
+      ];
+      data._hasTemplateBtn = true;
+    }
     
     // 防止在markdown处理中重复添加按钮
     if (hasKeyboardInMsg || data._skipTemplateBtn) {
-      data._hasTemplateBtn = true
+      data._hasTemplateBtn = true;
     }
 
     const sendMsg = async () => {
@@ -892,8 +954,8 @@ const adapter = new class QQBotAdapter {
     }
 
     if (TmplPkg && TmplPkg?.Button && !data.toQQBotMD) {
-      let fncName = /\[.*?\((\S+)\)\]/.exec(data.logFnc)[1]
-      const Btn = TmplPkg.Button[fncName]
+      let fncName = /\[.*?\((\S+)\)\]/.exec(data.logFnc)?.[1]
+      const Btn = fncName ? TmplPkg.Button[fncName] : null
 
       if (msg.type === 'node') data.wsids = { toImg: config.toImg }
 
@@ -932,7 +994,17 @@ const adapter = new class QQBotAdapter {
         return rets
       }
     } else {
-      msgs = await this.makeMsg(data, msg)
+      // 处理单个markdown对象
+      if (isSegmentMarkdown && hasTemplateBtn && !data._hasTemplateBtn) {
+        // 如果是单个markdown消息且有模板按钮，直接构造消息数组
+        msgs = [[
+          msg[0], 
+          { type: 'keyboard', id: config.btnTemplate[data.self_id] }
+        ]];
+        data._hasTemplateBtn = true;
+      } else {
+        msgs = await this.makeMsg(data, msg);
+      }
     }
 
     if (await sendMsg() === false) {
@@ -1971,6 +2043,9 @@ const adapter = new class QQBotAdapter {
       return msg;
     }
     
+    // 检查是否为segment.markdown形式的消息
+    const isSegmentMarkdown = msg.length === 1 && msg[0].type === 'markdown';
+    
     // 检查消息中是否已有键盘模板
     let hasKeyboard = false;
     
@@ -1991,6 +2066,16 @@ const adapter = new class QQBotAdapter {
     }
     
     const templateId = config.btnTemplate[data.self_id];
+    
+    // 对于segment.markdown形式的消息，特殊处理
+    if (isSegmentMarkdown) {
+      const newMsg = [
+        msg[0],
+        { type: 'keyboard', id: templateId }
+      ];
+      data._hasTemplateBtn = true;
+      return newMsg;
+    }
     
     // 查找markdown消息
     const mdIndex = msg.findIndex(m => 
