@@ -478,9 +478,25 @@ const adapter = new class QQBotAdapter {
     let reply
     const length = markdown_template?.params?.length || config.customMD?.[data.self_id]?.keys?.length || config.markdown.template.length
 
+    // 检查消息中是否已经包含键盘模板
+    const checkHasKeyboard = messages => {
+      return messages.some(arr => 
+        Array.isArray(arr) && arr.some(item => item.type === 'keyboard' && item.id)
+      );
+    };
+    
+    // 已经添加过模板按钮的标记
+    let hasAddedTemplateBtn = false;
+
     for (let i of Array.isArray(msg) ? msg : [msg]) {
       if (typeof i == 'object') i = { ...i }
       else i = { type: 'text', text: i }
+
+      // 如果消息中已包含键盘模板，标记已添加
+      if (i.type === 'keyboard' && i.id) {
+        hasAddedTemplateBtn = true;
+        continue; // 跳过这个键盘，会在后面统一处理
+      }
 
       switch (i.type) {
         case 'record':
@@ -620,8 +636,10 @@ const adapter = new class QQBotAdapter {
       }
     }
 
-    // 标记是否已添加模板按钮
-    let hasAddedTemplateBtn = false
+    // 检查是否已在消息中添加了键盘模板
+    if (checkHasKeyboard(messages)) {
+      hasAddedTemplateBtn = true;
+    }
 
     // 处理btnSuffix
     if (template.length && button.length < 5 && config.btnSuffix[data.self_id]) {
@@ -646,7 +664,7 @@ const adapter = new class QQBotAdapter {
     }
 
     // 统一处理模板按钮
-    if (template.length && config.btnTemplate[data.self_id]) {
+    if (!hasAddedTemplateBtn && !data._hasTemplateBtn && template.length && config.btnTemplate[data.self_id]) {
       const templateId = config.btnTemplate[data.self_id]
       if (templateId) {
         // 找到第一个markdown消息，添加模板按钮
@@ -660,8 +678,8 @@ const adapter = new class QQBotAdapter {
           }
         }
         
-        // 如果没有找到markdown消息但有按钮，创建一个空白markdown并附加模板按钮
-        if (!hasAddedTemplateBtn) {
+        // 如果没有找到markdown消息但有内容，创建一个空白markdown并附加模板按钮
+        if (!hasAddedTemplateBtn && (template.length > 0 || button.length > 0)) {
           messages.push([
             ...this.makeMarkdownTemplate(data, [' ']),
             { type: 'keyboard', id: templateId }
@@ -691,6 +709,12 @@ const adapter = new class QQBotAdapter {
         i.unshift(reply)
       }
     }
+    
+    // 标记为已添加模板按钮，防止在sendMsg中重复添加
+    if (hasAddedTemplateBtn) {
+      data._hasTemplateBtn = true;
+    }
+    
     return messages
   }
 
@@ -814,31 +838,42 @@ const adapter = new class QQBotAdapter {
     const rets = { message_id: [], data: [], error: [] }
     let msgs
 
-    // 标记是否已应用了模板按钮
-    let hasAppliedTemplateBtn = false
+    // 检查消息中是否已包含模板按钮
+    const checkHasTemplateBtn = (message) => {
+      if (!Array.isArray(message)) return false;
+      return message.some(m => 
+        (m.type === 'keyboard' && m.id) || 
+        (m.data && Array.isArray(m.data) && m.data.some(item => item.type === 'keyboard' && item.id))
+      );
+    }
     
     // 检查是否配置了模板按钮
     const hasTemplateBtn = config.btnTemplate && config.btnTemplate[data.self_id]
     
-    // 如果是直接传入的消息数组，检查是否已包含模板按钮
-    if (Array.isArray(msg)) {
-      // 检查消息中是否已有键盘模板
-      for (const m of msg) {
-        if (m.type === 'keyboard' && m.id) {
-          hasAppliedTemplateBtn = true
-          break
-        }
-      }
-    }
-
-    // 只有在配置了模板按钮且消息中没有模板按钮的情况下，才处理模板按钮
-    if (hasTemplateBtn && !hasAppliedTemplateBtn && !data._skipTemplateBtn) {
-      // 标记已处理过模板按钮，防止在reply等函数中重复处理
+    // 检查消息是否已包含模板按钮
+    const hasKeyboardInMsg = Array.isArray(msg) && checkHasTemplateBtn(msg)
+    
+    // 防止在markdown处理中重复添加按钮
+    if (hasKeyboardInMsg || data._skipTemplateBtn) {
       data._hasTemplateBtn = true
     }
 
     const sendMsg = async () => {
       for (const i of msgs) {
+        // 最后检查一次，确保每个消息数组中最多只有一个模板按钮
+        if (Array.isArray(i)) {
+          const keyboardButtons = i.filter(item => item.type === 'keyboard' && item.id);
+          if (keyboardButtons.length > 1) {
+            // 保留最后一个键盘模板，移除其他的
+            for (let j = 0; j < keyboardButtons.length - 1; j++) {
+              const index = i.indexOf(keyboardButtons[j]);
+              if (index !== -1) {
+                i.splice(index, 1);
+              }
+            }
+          }
+        }
+        
         try {
           Bot.makeLog('debug', ['发送消息', i], data.self_id)
           const ret = await send(i)
@@ -1938,15 +1973,20 @@ const adapter = new class QQBotAdapter {
     
     // 检查消息中是否已有键盘模板
     let hasKeyboard = false;
+    
+    // 更彻底地检查消息中是否已包含键盘模板
     for (const m of msg) {
-      if (m.type === 'keyboard' && m.id) {
+      if ((m.type === 'keyboard' && m.id) || 
+          (m.data && Array.isArray(m.data) && m.data.some(item => item.type === 'keyboard' && item.id))) {
         hasKeyboard = true;
         break;
       }
     }
     
-    // 如果已经有键盘模板，不做处理
-    if (hasKeyboard) {
+    // 如果已经有键盘模板或数据中已标记添加过，不做处理
+    if (hasKeyboard || data._hasTemplateBtn) {
+      // 标记已添加
+      data._hasTemplateBtn = true;
       return msg;
     }
     
@@ -1986,6 +2026,9 @@ const adapter = new class QQBotAdapter {
     
     // 添加模板按钮
     newMsg.push({ type: 'keyboard', id: templateId });
+    
+    // 标记已添加模板按钮
+    data._hasTemplateBtn = true;
     
     return newMsg;
   }
