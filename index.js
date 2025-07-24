@@ -478,9 +478,35 @@ const adapter = new class QQBotAdapter {
     let reply
     const length = markdown_template?.params?.length || config.customMD?.[data.self_id]?.keys?.length || config.markdown.template.length
 
+    // 检查消息是否已包含自定义按钮
+    const hasCustomKeyboard = Array.isArray(msg) && msg.some(m => 
+      (m.type === 'keyboard') || 
+      (m.type === 'raw' && m.data && m.data.type === 'keyboard')
+    );
+    
+    // 如果已有自定义按钮，直接处理原始消息
+    if (hasCustomKeyboard || data._hasCustomBtn) {
+      // 对于直接的markdown+keyboard组合，直接返回
+      if (Array.isArray(msg) && msg.length >= 2 && 
+          msg[0].type === 'markdown' && 
+          (msg[1].type === 'keyboard' || (msg[1].type === 'raw' && msg[1].data && msg[1].data.type === 'keyboard'))) {
+        if (reply) {
+          msg.unshift(reply);
+        }
+        return [msg];
+      }
+    }
+
     for (let i of Array.isArray(msg) ? msg : [msg]) {
       if (typeof i == 'object') i = { ...i }
       else i = { type: 'text', text: i }
+
+      // 处理键盘模板
+      if (i.type === 'keyboard' || (i.type === 'raw' && i.data && i.data.type === 'keyboard')) {
+        // 保存键盘模板，稍后添加到消息中
+        button.push(i);
+        continue;
+      }
 
       switch (i.type) {
         case 'record':
@@ -781,8 +807,35 @@ const adapter = new class QQBotAdapter {
     const rets = { message_id: [], data: [], error: [] }
     let msgs
 
+    // 检查消息是否已包含自定义按钮
+    const hasCustomKeyboard = Array.isArray(msg) && msg.some(m => 
+      (m.type === 'keyboard') || 
+      (m.type === 'raw' && m.data && m.data.type === 'keyboard')
+    );
+    
+    // 如果已有自定义按钮，标记为已处理
+    if (hasCustomKeyboard) {
+      data._hasCustomBtn = true;
+    }
+
     const sendMsg = async () => {
       for (const i of msgs) {
+        // 检查是否是空消息或只包含按钮的消息
+        if (Array.isArray(i) && i.length > 0) {
+          // 检查是否只包含按钮而没有实际内容
+          const onlyHasButtonOrReply = i.every(item => 
+            item.type === 'reply' || 
+            item.type === 'keyboard' || 
+            (item.type === 'raw' && item.data && item.data.type === 'keyboard')
+          );
+          
+          // 如果只有按钮或回复，不发送消息
+          if (onlyHasButtonOrReply) {
+            Bot.makeLog('debug', ['跳过发送只包含按钮的消息', i], data.self_id);
+            continue;
+          }
+        }
+        
         try {
           Bot.makeLog('debug', ['发送消息', i], data.self_id)
           const ret = await send(i)
@@ -831,6 +884,7 @@ const adapter = new class QQBotAdapter {
       if (config.markdown[data.self_id] == 'raw') msgs = await this.makeRawMarkdownMsg(data, msg)
       else msgs = await this.makeMarkdownMsg(data, msg)
 
+      // 检查是否有多个markdown消息
       const [mds, btns] = _.partition(msgs[0], v => v.type === 'markdown')
       if (mds.length > 1) {
         for (const idx in mds) {
@@ -841,7 +895,15 @@ const adapter = new class QQBotAdapter {
         return rets
       }
     } else {
-      msgs = await this.makeMsg(data, msg)
+      // 如果消息已包含自定义按钮，并且是markdown类型
+      if (data._hasCustomBtn && Array.isArray(msg) && msg.length >= 2 && 
+          msg[0].type === 'markdown' && 
+          (msg[1].type === 'keyboard' || (msg[1].type === 'raw' && msg[1].data && msg[1].data.type === 'keyboard'))) {
+        // 直接使用原始消息，不进行额外处理
+        msgs = [msg];
+      } else {
+        msgs = await this.makeMsg(data, msg);
+      }
     }
 
     if (await sendMsg() === false) {
@@ -993,6 +1055,22 @@ const adapter = new class QQBotAdapter {
 
     const sendMsg = async () => {
       for (const i of msgs) {
+        // 检查是否是空消息或只包含按钮的消息
+        if (Array.isArray(i) && i.length > 0) {
+          // 检查是否只包含按钮而没有实际内容
+          const onlyHasButtonOrReply = i.every(item => 
+            item.type === 'reply' || 
+            item.type === 'keyboard' || 
+            (item.type === 'raw' && item.data && item.data.type === 'keyboard')
+          );
+          
+          // 如果只有按钮或回复，不发送消息
+          if (onlyHasButtonOrReply) {
+            Bot.makeLog('debug', ['跳过发送只包含按钮的消息', i], data.self_id);
+            continue;
+          }
+        }
+        
         try {
           Bot.makeLog('debug', ['发送消息', i], data.self_id)
           const ret = await send(i)
