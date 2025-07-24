@@ -367,7 +367,15 @@ const adapter = new class QQBotAdapter {
           for (const { message } of i.data) { messages.push(...(await this.makeRawMarkdownMsg(data, message))) }
           continue
         case 'raw':
-          messages.push(Array.isArray(i.data) ? i.data : [i.data])
+          // 检查是否为keyboard类型
+          if (i.data && i.data.type === 'keyboard') {
+            // 保存键盘模板，稍后添加到消息中
+            button.push(i);
+            // 标记已有自定义按钮
+            data._hasCustomBtn = true;
+          } else {
+            messages.push(Array.isArray(i.data) ? i.data : [i.data]);
+          }
           break
         default:
           content += await this.makeRawMarkdownText(data, JSON.stringify(i), button)
@@ -484,16 +492,17 @@ const adapter = new class QQBotAdapter {
       (m.type === 'raw' && m.data && m.data.type === 'keyboard')
     );
     
-    // 如果已有自定义按钮，直接处理原始消息
-    if (hasCustomKeyboard || data._hasCustomBtn) {
-      // 对于直接的markdown+keyboard组合，直接返回
+    // 如果已有自定义按钮，标记为已处理
+    if (hasCustomKeyboard) {
+      data._hasCustomBtn = true;
+      
+      // 对于markdown+keyboard组合，直接使用原始消息
       if (Array.isArray(msg) && msg.length >= 2 && 
-          msg[0].type === 'markdown' && 
-          (msg[1].type === 'keyboard' || (msg[1].type === 'raw' && msg[1].data && msg[1].data.type === 'keyboard'))) {
-        if (reply) {
-          msg.unshift(reply);
-        }
-        return [msg];
+          msg.some(m => m.type === 'markdown') && 
+          msg.some(m => m.type === 'keyboard' || (m.type === 'raw' && m.data && m.data.type === 'keyboard'))) {
+        msgs = [msg];
+        await sendMsg();
+        return rets;
       }
     }
 
@@ -623,7 +632,15 @@ const adapter = new class QQBotAdapter {
           }
           continue
         case 'raw':
-          messages.push(Array.isArray(i.data) ? i.data : [i.data])
+          // 检查是否为keyboard类型
+          if (i.data && i.data.type === 'keyboard') {
+            // 保存键盘模板，稍后添加到消息中
+            button.push(i);
+            // 标记已有自定义按钮
+            data._hasCustomBtn = true;
+          } else {
+            messages.push(Array.isArray(i.data) ? i.data : [i.data]);
+          }
           break
         case 'custom':
           template.push(...i.data)
@@ -816,26 +833,56 @@ const adapter = new class QQBotAdapter {
     // 如果已有自定义按钮，标记为已处理
     if (hasCustomKeyboard) {
       data._hasCustomBtn = true;
+      
+      // 对于markdown+keyboard组合，直接使用原始消息
+      if (Array.isArray(msg) && msg.length >= 2 && 
+          msg.some(m => m.type === 'markdown') && 
+          msg.some(m => m.type === 'keyboard' || (m.type === 'raw' && m.data && m.data.type === 'keyboard'))) {
+        msgs = [msg];
+        await sendMsg();
+        return rets;
+      }
     }
 
     const sendMsg = async () => {
-      for (const i of msgs) {
-        // 检查是否是空消息或只包含按钮的消息
-        if (Array.isArray(i) && i.length > 0) {
-          // 检查是否只包含按钮而没有实际内容
+      // 过滤掉空消息或只包含按钮的消息
+      const validMsgs = msgs.filter(i => {
+        // 检查是否为空数组或undefined
+        if (!i || (Array.isArray(i) && i.length === 0)) {
+          return false;
+        }
+        
+        // 检查是否只包含按钮或回复而没有实际内容
+        if (Array.isArray(i)) {
           const onlyHasButtonOrReply = i.every(item => 
             item.type === 'reply' || 
             item.type === 'keyboard' || 
             (item.type === 'raw' && item.data && item.data.type === 'keyboard')
           );
           
-          // 如果只有按钮或回复，不发送消息
           if (onlyHasButtonOrReply) {
             Bot.makeLog('debug', ['跳过发送只包含按钮的消息', i], data.self_id);
-            continue;
+            return false;
+          }
+          
+          // 检查是否为空markdown
+          const hasEmptyMarkdown = i.some(item => 
+            item.type === 'markdown' && 
+            (!item.content || item.content.trim() === '' || item.content.trim() === ' ') &&
+            !item.custom_template_id
+          );
+          
+          if (hasEmptyMarkdown) {
+            Bot.makeLog('debug', ['跳过发送空markdown消息', i], data.self_id);
+            return false;
           }
         }
         
+        return true;
+      });
+      
+      // 使用过滤后的消息列表
+      for (const i of validMsgs) {
         try {
           Bot.makeLog('debug', ['发送消息', i], data.self_id)
           const ret = await send(i)
@@ -881,24 +928,32 @@ const adapter = new class QQBotAdapter {
     }
 
     if ((config.markdown[data.self_id] || (data.toQQBotMD === true && config.customMD[data.self_id])) && data.toQQBotMD !== false) {
-      if (config.markdown[data.self_id] == 'raw') msgs = await this.makeRawMarkdownMsg(data, msg)
-      else msgs = await this.makeMarkdownMsg(data, msg)
+      // 如果消息已包含自定义按钮，直接使用原始消息
+      if (data._hasCustomBtn && Array.isArray(msg) && msg.some(m => 
+          (m.type === 'keyboard') || (m.type === 'raw' && m.data && m.data.type === 'keyboard'))) {
+        // 直接使用原始消息，不进行额外处理
+        msgs = [msg];
+      } else {
+        if (config.markdown[data.self_id] == 'raw') msgs = await this.makeRawMarkdownMsg(data, msg)
+        else msgs = await this.makeMarkdownMsg(data, msg)
+      }
 
       // 检查是否有多个markdown消息
-      const [mds, btns] = _.partition(msgs[0], v => v.type === 'markdown')
-      if (mds.length > 1) {
-        for (const idx in mds) {
-          msgs = mds[idx]
-          if (idx === mds.length - 1) msgs.push(...btns)
-          await sendMsg()
+      if (msgs.length > 0 && Array.isArray(msgs[0])) {
+        const [mds, btns] = _.partition(msgs[0], v => v.type === 'markdown')
+        if (mds.length > 1) {
+          for (const idx in mds) {
+            msgs = mds[idx]
+            if (idx === mds.length - 1) msgs.push(...btns)
+            await sendMsg()
+          }
+          return rets
         }
-        return rets
       }
     } else {
       // 如果消息已包含自定义按钮，并且是markdown类型
-      if (data._hasCustomBtn && Array.isArray(msg) && msg.length >= 2 && 
-          msg[0].type === 'markdown' && 
-          (msg[1].type === 'keyboard' || (msg[1].type === 'raw' && msg[1].data && msg[1].data.type === 'keyboard'))) {
+      if (data._hasCustomBtn && Array.isArray(msg) && msg.some(m => 
+          (m.type === 'keyboard') || (m.type === 'raw' && m.data && m.data.type === 'keyboard'))) {
         // 直接使用原始消息，不进行额外处理
         msgs = [msg];
       } else {
@@ -1054,23 +1109,44 @@ const adapter = new class QQBotAdapter {
     let msgs
 
     const sendMsg = async () => {
-      for (const i of msgs) {
-        // 检查是否是空消息或只包含按钮的消息
-        if (Array.isArray(i) && i.length > 0) {
-          // 检查是否只包含按钮而没有实际内容
+      // 过滤掉空消息或只包含按钮的消息
+      const validMsgs = msgs.filter(i => {
+        // 检查是否为空数组或undefined
+        if (!i || (Array.isArray(i) && i.length === 0)) {
+          return false;
+        }
+        
+        // 检查是否只包含按钮或回复而没有实际内容
+        if (Array.isArray(i)) {
           const onlyHasButtonOrReply = i.every(item => 
             item.type === 'reply' || 
             item.type === 'keyboard' || 
             (item.type === 'raw' && item.data && item.data.type === 'keyboard')
           );
           
-          // 如果只有按钮或回复，不发送消息
           if (onlyHasButtonOrReply) {
             Bot.makeLog('debug', ['跳过发送只包含按钮的消息', i], data.self_id);
-            continue;
+            return false;
+          }
+          
+          // 检查是否为空markdown
+          const hasEmptyMarkdown = i.some(item => 
+            item.type === 'markdown' && 
+            (!item.content || item.content.trim() === '' || item.content.trim() === ' ') &&
+            !item.custom_template_id
+          );
+          
+          if (hasEmptyMarkdown) {
+            Bot.makeLog('debug', ['跳过发送空markdown消息', i], data.self_id);
+            return false;
           }
         }
         
+        return true;
+      });
+      
+      // 使用过滤后的消息列表
+      for (const i of validMsgs) {
         try {
           Bot.makeLog('debug', ['发送消息', i], data.self_id)
           const ret = await send(i)
