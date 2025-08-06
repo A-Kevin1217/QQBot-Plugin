@@ -72,10 +72,10 @@ const adapter = new class QQBotAdapter {
 
     try {
       fs.writeFileSync(inputFile, await Bot.Buffer(file))
-      
+
       // 获取CPU核心数
       const cpuCount = os.cpus().length
-      
+
       // 使用child_process的execFile函数异步执行ffmpeg
       await new Promise((resolve, reject) => {
         import('node:child_process').then(({ execFile }) => {
@@ -87,7 +87,7 @@ const adapter = new class QQBotAdapter {
             '-ac', '1',
             pcmFile
           ])
-          
+
           // 设置ffmpeg进程使用最后一个CPU核心
           if (process.platform !== 'win32') {
             import('node:worker_threads').then(({ Worker }) => {
@@ -101,7 +101,7 @@ const adapter = new class QQBotAdapter {
               logger.warn(`导入worker_threads模块失败: ${err}`)
             })
           }
-          
+
           ffmpegProcess.on('exit', (code) => {
             if (code === 0) {
               resolve()
@@ -109,13 +109,13 @@ const adapter = new class QQBotAdapter {
               reject(new Error(`ffmpeg 进程退出，退出码: ${code}`))
             }
           })
-          
+
           ffmpegProcess.on('error', (err) => {
             reject(err)
           })
         }).catch(reject)
       })
-      
+
       file = Buffer.from((await encodeSilk(fs.readFileSync(pcmFile), 48000)).data)
     } catch (err) {
       logger.error(`silk 转码错误：${err}`)
@@ -980,7 +980,7 @@ const adapter = new class QQBotAdapter {
         }
       ])
     }
-    
+
     if (reply) {
       for (const i of messages) i.unshift(reply)
     }
@@ -1362,7 +1362,7 @@ const adapter = new class QQBotAdapter {
         Bot.makeLog('debug', ['无法更新接收消息计数', err2], id)
       }
     }
-    
+
     Bot[data.self_id].dau.setDau('receive_msg', data)
     Bot.em(`${data.post_type}.${data.message_type}.${data.sub_type}`, data)
   }
@@ -1517,7 +1517,7 @@ const adapter = new class QQBotAdapter {
     this.getChannelThreadInfo(data.channel_id, data.thread_id).then(threadInfo => {
       const thread = threadInfo?.thread
       const title = thread?.thread_info?.title || '无标题'
-      
+
       // 解析帖子内容
       let contentText = ''
       try {
@@ -1529,7 +1529,7 @@ const adapter = new class QQBotAdapter {
               .map(p => p.elems?.map(e => e.text?.text || '').join('') || '')
               .join('')
               .trim()
-            
+
             if (contentText && contentText.length > 0) {
               contentText = contentText.substring(0, 100) // 增加内容长度限制
             }
@@ -1542,17 +1542,17 @@ const adapter = new class QQBotAdapter {
           contentText = rawContent.substring(0, 100)
         }
       }
-      
-      const logMessage = contentText 
+
+      const logMessage = contentText
         ? `论坛帖子创建：「${title}」${contentText}${contentText.length >= 100 ? '...' : ''}`
         : `论坛帖子创建：「${title}」`
-      
+
       Bot.makeLog('info', [logMessage, event], id)
     }).catch(err => {
       // 获取详细信息失败时的备用日志
       Bot.makeLog('info', [`论坛帖子创建事件：[频道:${data.channel_id}, 主题:${data.thread_id}, 帖子:${data.post_id}]`, event], id)
     })
-    
+
     // 触发事件
     Bot.em('forum.post.create', data)
   }
@@ -1571,7 +1571,7 @@ const adapter = new class QQBotAdapter {
     }
 
     Bot.makeLog('info', [`论坛帖子删除事件：[频道:${data.channel_id}, 主题:${data.thread_id}]`, event], id)
-    
+
     // 触发事件
     Bot.em('forum.post.delete', data)
   }
@@ -1592,7 +1592,7 @@ const adapter = new class QQBotAdapter {
     }
 
     Bot.makeLog('info', [`论坛回复创建事件：[频道:${data.channel_id}, 主题:${data.thread_id}, 回复:${data.reply_id}]`, event], id)
-    
+
     // 触发事件
     Bot.em('forum.reply.create', data)
   }
@@ -1612,7 +1612,7 @@ const adapter = new class QQBotAdapter {
     }
 
     Bot.makeLog('info', [`论坛回复删除事件：[频道:${data.channel_id}, 主题:${data.thread_id}, 回复:${data.reply_id}]`, event], id)
-    
+
     // 触发事件
     Bot.em('forum.reply.delete', data)
   }
