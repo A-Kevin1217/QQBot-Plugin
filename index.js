@@ -296,13 +296,20 @@ const adapter = new class QQBotAdapter {
 
   makeButtons(data, button_square) {
     const msgs = []
-    for (const button_row of button_square) {
-      const buttons = []
-      for (let button of button_row) {
-        button = this.makeButton(data, button)
-        if (button) buttons.push(button)
-      }
-      if (buttons.length) { msgs.push({ type: 'button', buttons }) }
+    // for (const button_row of button_square) {
+    //   const buttons = []
+    //   for (let button of button_row) {
+    //     button = this.makeButton(data, button)
+    //     if (button) buttons.push(button)
+    //   }
+    //   if (buttons.length) { msgs.push({ type: 'button', buttons }) }
+    // }
+    const botId = data?.self_id?.toString()
+    if (botId && config.keyboard && config.keyboard[botId]) {
+      msgs.push([{
+        type: 'keyboard',
+        id: config.keyboard[botId]
+      }])
     }
     return msgs
   }
