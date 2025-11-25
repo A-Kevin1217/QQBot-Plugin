@@ -699,6 +699,15 @@ const adapter = new class QQBotAdapter {
     const sendType = ['audio', 'image', 'video', 'file']
     const messages = []
     const button = []
+    // 添加全局按钮
+    const botId = data?.self_id?.toString()
+    if (botId && config.keyboard && config.keyboard[botId]) {
+      // 使用用户指定的按钮格式
+      messages.push([{
+        type: 'keyboard',
+        id: config.keyboard[botId]
+      }])
+    }
     let message = []
     let reply
 
@@ -801,12 +810,8 @@ const adapter = new class QQBotAdapter {
 
     if (message.length) { messages.push(message) }
 
-    while (button.length) {
-      messages.push([{
-        type: 'keyboard',
-        content: { rows: button.splice(0, 5) }
-      }])
-    }
+    // 添加按钮到消息中
+    // 注意：按钮已经在上面的代码中添加，这里不再重复添加
 
     if (reply) {
       for (const i of messages) i.unshift(reply)
