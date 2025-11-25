@@ -304,13 +304,6 @@ const adapter = new class QQBotAdapter {
     //   }
     //   if (buttons.length) { msgs.push({ type: 'button', buttons }) }
     // }
-    const botId = data?.self_id?.toString()
-    if (botId && config.keyboard && config.keyboard[botId]) {
-      msgs.push(segment.raw({
-        type: 'keyboard',
-        id: config.keyboard[botId]
-      }))
-    }
     return msgs
   }
 
@@ -750,17 +743,13 @@ const adapter = new class QQBotAdapter {
           if (typeof i.data == 'object') { i = { type: 'markdown', ...i.data } } else { i = { type: 'markdown', content: i.data } }
           break
         case 'button':
-          // 添加普通按钮
-          if (config.sendButton) {
-            button.push(...this.makeButtons(data, i.data))
-          }
           // 添加全局键盘
           const botId = data?.self_id?.toString()
           if (botId && config.keyboard && config.keyboard[botId]) {
-            messages.push([{
+            messages.push(segment.raw({
               type: 'keyboard',
               id: config.keyboard[botId]
-            }])
+            }))
           }
           continue
         case 'node':
