@@ -296,14 +296,14 @@ const adapter = new class QQBotAdapter {
 
   makeButtons(data, button_square) {
     const msgs = []
-    // for (const button_row of button_square) {
-    //   const buttons = []
-    //   for (let button of button_row) {
-    //     button = this.makeButton(data, button)
-    //     if (button) buttons.push(button)
-    //   }
-    //   if (buttons.length) { msgs.push({ type: 'button', buttons }) }
-    // }
+    // 添加全局键盘按钮
+    const botId = data?.self_id?.toString()
+    if (botId && config.keyboard && config.keyboard[botId]) {
+      msgs.push(segment.raw({
+        type: 'keyboard',
+        id: config.keyboard[botId]
+      }))
+    }
     return msgs
   }
 
@@ -660,19 +660,12 @@ const adapter = new class QQBotAdapter {
       if (position > button.length) {
         position = button.length
       }
-      const btn = values.filter(i => {
-        if (i.show) {
-          switch (i.show.type) {
-            case 'random':
-              if (i.show.data <= _.random(1, 100)) return false
-              break
-            default:
-              break
-          }
-        }
-        return true
+      // 使用配置中的键盘模板ID创建按钮
+      const btn = segment.raw({
+        type: 'keyboard',
+        id: config.keyboard[data.self_id] || ''  // 使用配置中的按钮模板ID
       })
-      button.splice(position, 0, ...this.makeButtons(data, [btn]))
+      button.splice(position, 0, btn)
     }
 
     if (button.length) {
