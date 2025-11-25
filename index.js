@@ -699,15 +699,6 @@ const adapter = new class QQBotAdapter {
     const sendType = ['audio', 'image', 'video', 'file']
     const messages = []
     const button = []
-    // 添加全局按钮
-    const botId = data?.self_id?.toString()
-    if (botId && config.keyboard && config.keyboard[botId]) {
-      // 使用用户指定的按钮格式
-      messages.push([{
-        type: 'keyboard',
-        id: config.keyboard[botId]
-      }])
-    }
     let message = []
     let reply
 
@@ -752,7 +743,18 @@ const adapter = new class QQBotAdapter {
           if (typeof i.data == 'object') { i = { type: 'markdown', ...i.data } } else { i = { type: 'markdown', content: i.data } }
           break
         case 'button':
-          config.sendButton && button.push(...this.makeButtons(data, i.data))
+          // 添加普通按钮
+          if (config.sendButton) {
+            button.push(...this.makeButtons(data, i.data))
+          }
+          // 添加全局键盘
+          const botId = data?.self_id?.toString()
+          if (botId && config.keyboard && config.keyboard[botId]) {
+            messages.push([{
+              type: 'keyboard',
+              id: config.keyboard[botId]
+            }])
+          }
           continue
         case 'node':
           if (Handler.has('ws.tool.toImg') && config.toImg) {
@@ -871,7 +873,7 @@ const adapter = new class QQBotAdapter {
 
     // 检查是否包含raw类型的消息，如果包含则使用makeRawMarkdownMsg处理
     const hasRawMessage = Array.isArray(msg) ? msg.some(m => m.type === 'raw') : msg.type === 'raw'
-    
+
     if (hasRawMessage) {
       // 对于包含raw消息的情况，使用makeRawMarkdownMsg处理，确保markdown和按钮在同一消息中
       msgs = await this.makeRawMarkdownMsg(data, msg)
