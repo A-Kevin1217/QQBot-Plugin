@@ -306,10 +306,10 @@ const adapter = new class QQBotAdapter {
     // }
     const botId = data?.self_id?.toString()
     if (botId && config.keyboard && config.keyboard[botId]) {
-      msgs.push([{
+      msgs.push(segment.raw({
         type: 'keyboard',
         id: config.keyboard[botId]
-      }])
+      }))
     }
     return msgs
   }
