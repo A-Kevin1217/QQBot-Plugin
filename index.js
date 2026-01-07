@@ -444,11 +444,46 @@ const adapter = new class QQBotAdapter {
     // 单key模式处理
     if (singleKeyMode) {
       const singleKeyValues = []
+      let currentValue = ''
+      
       for (const temp of template) {
         if (!temp.length) continue
-        for (const i of splitMarkDownTemplate(temp)) {
-          singleKeyValues.push(i)
+        
+        // 按照用户需求，只有遇到特定markdown语法时才拆分
+        // 检查是否包含需要拆分的语法：[](),![](),```
+        const hasLink = /\[(.*?)\]\(/.test(temp)
+        const hasImage = /!\[(.*?)\]\(/.test(temp)
+        const hasCodeBlock = /```/.test(temp)
+        
+        if (!hasLink && !hasImage && !hasCodeBlock) {
+          // 没有需要拆分的语法，直接添加到当前值
+          currentValue += temp
+        } else {
+          // 有需要拆分的语法，使用splitMarkDownTemplate拆分
+          const segments = splitMarkDownTemplate(temp)
+          for (const segment of segments) {
+            // 检查是否需要拆分到下一个数组元素
+            // 1. 遇到 ![ 开头的图片描述，且当前值不为空，拆分
+            // 2. 遇到 ]() 开头的链接，且当前值以 ![ 结尾，拆分（图片描述和链接必须拆分）
+            // 3. 遇到 ``` 开头的代码块，或组合成 ``` 的情况，且当前值不为空，拆分
+            const isImageDesc = segment.startsWith('![')
+            const isImageLink = currentValue.endsWith('![') && segment.startsWith('](')
+            const isCodeBlockStart = segment.startsWith('```')
+            const isCodeBlockCombination = (currentValue.endsWith('``') && segment === '`') || (currentValue.endsWith('`') && segment === '``')
+            
+            if ((currentValue && isImageDesc) || isImageLink || (currentValue && isCodeBlockStart) || isCodeBlockCombination) {
+              singleKeyValues.push(currentValue)
+              currentValue = segment
+            } else {
+              currentValue += segment
+            }
+          }
         }
+      }
+      
+      // 添加最后一个值
+      if (currentValue) {
+        singleKeyValues.push(currentValue)
       }
       
       // 首尾添加 ][ 和固定文字
@@ -456,11 +491,19 @@ const adapter = new class QQBotAdapter {
         const prefix = config.markdown.prefix || ''
         const suffix = config.markdown.suffix || ''
         
-        // 按照 prefix + ] + 内容 + [ + suffix 的顺序添加
-        if (prefix) singleKeyValues.unshift(prefix)
-        singleKeyValues.unshift(']')
-        singleKeyValues.push('[')
-        if (suffix) singleKeyValues.push(suffix)
+        // 按照 prefix + ]\r + 内容 + \r[ + suffix 的顺序添加
+        for (let i = 0; i < singleKeyValues.length; i++) {
+          let value = singleKeyValues[i]
+          if (i === 0) {
+            // 第一个元素添加前缀和前括号
+            value = (prefix || '') + ']\r' + value
+          }
+          if (i === singleKeyValues.length - 1) {
+            // 最后一个元素添加后括号和后缀
+            value = value + '\r[' + (suffix || '')
+          }
+          singleKeyValues[i] = value
+        }
         
         result.push({
           type: 'markdown',
@@ -621,16 +664,23 @@ const adapter = new class QQBotAdapter {
           const { des, url } = await this.makeMarkdownImage(data, i.file, i.summary)
           // 图片数量超过模板长度时
           if (singleKeyMode) {
-            template.push(content + des)
+            // 单key模式下，将content+des添加到模板，url作为下一个元素
+            if (content || des) {
+              template.push(content + des)
+            }
+            if (url) {
+              template.push(url)
+            }
+            content = ''
           } else {
             const limit = template.length % (length - 1)
             if (template.length && !limit) {
               if (content) template.push(content)
               template.push(des)
             } else template.push(content + des)
-          }
 
-          content = url
+            content = url
+          }
           break
         } case 'markdown':
           if (typeof i.data == 'object') {
@@ -684,7 +734,15 @@ const adapter = new class QQBotAdapter {
 
     if (content) template.push(content)
     if (template.length > length) {
-      const templates = _(template).chunk(length).map(v => this.makeMarkdownTemplate(data, v)).value()
+      // 使用原生 JavaScript 实现 chunk 功能，避免依赖 lodash 版本
+      const chunkArray = (array, size) => {
+        const result = []
+        for (let i = 0; i < array.length; i += size) {
+          result.push(array.slice(i, i + size))
+        }
+        return result
+      }
+      const templates = chunkArray(template, length).map(v => this.makeMarkdownTemplate(data, v))
       messages.push(...templates)
     } else if (template.length) {
       const tmp = this.makeMarkdownTemplate(data, template)
