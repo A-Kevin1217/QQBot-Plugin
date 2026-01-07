@@ -429,6 +429,8 @@ const adapter = new class QQBotAdapter {
   makeMarkdownTemplate(data, template) {
     let keys; let custom_template_id; let params = []; let index = 0; let type = 0
     const result = []
+    const singleKeyMode = config.markdown.singleKey || false
+    
     if (markdown_template) {
       custom_template_id = markdown_template.custom_template_id
       params = _.cloneDeep(markdown_template.params)
@@ -438,6 +440,41 @@ const adapter = new class QQBotAdapter {
       custom_template_id = custom?.custom_template_id || config.markdown[data.self_id]
       keys = _.cloneDeep(custom?.keys) || config.markdown.template.split('')
     }
+    
+    // 单key模式处理
+    if (singleKeyMode) {
+      const singleKeyValues = []
+      for (const temp of template) {
+        if (!temp.length) continue
+        for (const i of splitMarkDownTemplate(temp)) {
+          singleKeyValues.push(i)
+        }
+      }
+      
+      // 首尾添加 ][ 和固定文字
+      if (singleKeyValues.length > 0) {
+        const prefix = config.markdown.prefix || ''
+        const suffix = config.markdown.suffix || ''
+        
+        // 按照 prefix + ] + 内容 + [ + suffix 的顺序添加
+        if (prefix) singleKeyValues.unshift(prefix)
+        singleKeyValues.unshift(']')
+        singleKeyValues.push('[')
+        if (suffix) singleKeyValues.push(suffix)
+        
+        result.push({
+          type: 'markdown',
+          custom_template_id,
+          params: [{
+            key: keys[0] || 'a',
+            values: singleKeyValues
+          }]
+        })
+      }
+      return result
+    }
+    
+    // 传统模式处理
     for (const temp of template) {
       if (!temp.length) continue
 
@@ -493,7 +530,8 @@ const adapter = new class QQBotAdapter {
     let template = []
     let content = ''
     let reply
-    const length = markdown_template?.params?.length || config.customMD?.[data.self_id]?.keys?.length || config.markdown.template.length
+    const singleKeyMode = config.markdown.singleKey || false
+    const length = singleKeyMode ? 1 : (markdown_template?.params?.length || config.customMD?.[data.self_id]?.keys?.length || config.markdown.template.length)
 
     for (let i of Array.isArray(msg) ? msg : [msg]) {
       if (typeof i == 'object') i = { ...i }
@@ -581,13 +619,16 @@ const adapter = new class QQBotAdapter {
           }
         case 'image': {
           const { des, url } = await this.makeMarkdownImage(data, i.file, i.summary)
-          const limit = template.length % (length - 1)
-
           // 图片数量超过模板长度时
-          if (template.length && !limit) {
-            if (content) template.push(content)
-            template.push(des)
-          } else template.push(content + des)
+          if (singleKeyMode) {
+            template.push(content + des)
+          } else {
+            const limit = template.length % (length - 1)
+            if (template.length && !limit) {
+              if (content) template.push(content)
+              template.push(des)
+            } else template.push(content + des)
+          }
 
           content = url
           break

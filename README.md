@@ -88,7 +88,14 @@ TRSS-Yunzai QQBot 适配器 插件
     - `redis`
       - 优点: 大部分使用redis存储,不会缓存
       - 缺点: 没有缓存所以有些没统计
-16. 已适配YePanel,提供dau统计和设置功能
+16. `config/QQBot.yaml`中`markdown`配置项:
+    - `template: 'abcdefghij'` - 模板键值字符串，会被拆分为单个字符作为key
+    - `singleKey: false` - 是否开启单key模式
+    - `prefix: ''` - 单key模式下，在 ] 前添加的固定文字
+    - `suffix: ''` - 单key模式下，在 [ 后添加的固定文字
+
+
+17. 已适配YePanel,提供dau统计和设置功能
 
 ## 安装教程
 

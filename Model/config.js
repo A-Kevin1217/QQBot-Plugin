@@ -14,7 +14,10 @@ let { config, configSave } = await makeConfig('QQBot', {
   callStats: false,
   userStats: false,
   markdown: {
-    template: 'abcdefghij'
+    template: 'abcdefghij',  // 模板键值字符串，会被拆分为单个字符作为key
+    singleKey: false,         // 是否开启单key模式
+    prefix: '',               // 单key模式下，在 ] 前添加的固定文字
+    suffix: ''                // 单key模式下，在 [ 后添加的固定文字
   },
   keyboard: {},  // 按钮模板ID映射，格式如："3889001286": "102076896_1763887100"
   sendButton: true,
