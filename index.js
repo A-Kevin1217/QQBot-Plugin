@@ -491,19 +491,11 @@ const adapter = new class QQBotAdapter {
         const prefix = config.markdown.prefix || ''
         const suffix = config.markdown.suffix || ''
         
-        // 按照 prefix + ]\r + 内容 + \r[ + suffix 的顺序添加
-        for (let i = 0; i < singleKeyValues.length; i++) {
-          let value = singleKeyValues[i]
-          if (i === 0) {
-            // 第一个元素添加前缀和前括号
-            value = (prefix || '') + ']\r' + value
-          }
-          if (i === singleKeyValues.length - 1) {
-            // 最后一个元素添加后括号和后缀
-            value = value + '\r[' + (suffix || '')
-          }
-          singleKeyValues[i] = value
-        }
+        // 按照用户要求，只在整个key的首尾添加前缀后缀，不是每个数组元素都加
+        // 第一个元素添加前缀和前括号
+        singleKeyValues[0] = (prefix || '') + ']\r' + singleKeyValues[0]
+        // 最后一个元素添加后括号和后缀
+        singleKeyValues[singleKeyValues.length - 1] = singleKeyValues[singleKeyValues.length - 1] + '\r[' + (suffix || '')
         
         result.push({
           type: 'markdown',
@@ -668,10 +660,8 @@ const adapter = new class QQBotAdapter {
             if (content || des) {
               template.push(content + des)
             }
-            if (url) {
-              template.push(url)
-            }
-            content = ''
+            // 不要清空content，而是将url赋值给content，这样后续的文本内容可以与url合并
+            content = url
           } else {
             const limit = template.length % (length - 1)
             if (template.length && !limit) {
