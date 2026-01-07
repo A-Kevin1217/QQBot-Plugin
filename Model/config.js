@@ -51,7 +51,7 @@ let { config, configSave } = await makeConfig('QQBot', {
 }, {
   tips: [
     '欢迎使用 TRSS-Yunzai QQBot Plugin ! 作者：时雨🌌星空 & 小叶 & 小丞',
-    '参考：https://github.com/A-Kevin1217/Yunzai-QQBot-Plugin'
+    '参考：https://github.com/A-Kevin1217/QQBot-Plugin'
   ]
 })
 
