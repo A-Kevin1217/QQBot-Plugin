@@ -454,8 +454,10 @@ const adapter = new class QQBotAdapter {
         const hasLink = /\[(.*?)\]\(/.test(temp)
         const hasImage = /!\[(.*?)\]\(/.test(temp)
         const hasCodeBlock = /```/.test(temp)
+        // 检查是否是图片链接 (图片链接)
+        const isImageUrl = /^\(.*?\)$/.test(temp)
         
-        if (!hasLink && !hasImage && !hasCodeBlock) {
+        if (!hasLink && !hasImage && !hasCodeBlock && !isImageUrl) {
           // 没有需要拆分的语法，直接添加到当前值
           currentValue += temp
         } else {
@@ -722,8 +724,9 @@ const adapter = new class QQBotAdapter {
       }
     }
 
+
     if (content) template.push(content)
-    if (template.length > length) {
+    if (!singleKeyMode && template.length > length) {
       // 使用原生 JavaScript 实现 chunk 功能，避免依赖 lodash 版本
       const chunkArray = (array, size) => {
         const result = []
@@ -742,6 +745,7 @@ const adapter = new class QQBotAdapter {
         messages.push(tmp)
       }
     }
+
 
     if (template.length && button.length < 5 && config.btnSuffix[data.self_id]) {
       let { position, values } = config.btnSuffix[data.self_id]
