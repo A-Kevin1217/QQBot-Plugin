@@ -788,10 +788,7 @@ const adapter = new class QQBotAdapter {
       msgs = await this.makeMsg(data, msg)
     }
 
-    if (await sendMsg() === false) {
-      msgs = await this.makeMsg(data, msg)
-      await sendMsg()
-    }
+    await sendMsg()
 
     if (Array.isArray(data._ret_id)) { data._ret_id.push(...rets.message_id) }
     return rets
@@ -955,10 +952,7 @@ const adapter = new class QQBotAdapter {
     }
 
     msgs = await this.makeGuildMsg(data, msg)
-    if (await sendMsg() === false) {
-      msgs = await this.makeGuildMsg(data, msg)
-      await sendMsg()
-    }
+    await sendMsg()
     return rets
   }
 
