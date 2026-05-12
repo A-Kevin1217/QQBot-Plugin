@@ -18,10 +18,15 @@ import {
 } from './Model/index.js'
 
 const QQBot = await (async () => {
-  try {
-    return (await import('qq-official-bot')).Bot
-  } catch (error) {
-    return (await import('qq-group-bot')).Bot
+  for (const pkg of ['qq-official-bot', 'qq-group-bot']) {
+    try {
+      const { Bot } = await import(pkg)
+      // 兼容官方新增的 GROUP_MESSAGE_CREATE（群全量消息）事件，复用群 @ 消息的解析器
+      const { QQEvent, EventParserMap } = await import(`${pkg}/lib/event/index.js`)
+      QQEvent.GROUP_MESSAGE_CREATE = 'message.group'
+      EventParserMap.set(QQEvent.GROUP_MESSAGE_CREATE, EventParserMap.get(QQEvent.GROUP_AT_MESSAGE_CREATE))
+      return Bot
+    } catch (e) {}
   }
 })()
 
@@ -1230,6 +1235,13 @@ const adapter = new class QQBotAdapter {
   }
 
   async makeMessage(id, event) {
+    // 消息审核结果（主动消息发送后由网关回推）
+    if (event.message_type === 'audit') {
+      Bot.makeLog('info', [`消息审核${event.sub_type === 'pass' ? '通过' : '不通过'}`, event], id)
+      Bot.em(`${event.post_type}.${event.message_type}.${event.sub_type}`, { ...event, self_id: id, bot: Bot[id] })
+      return
+    }
+
     const data = {
       raw: event,
       bot: Bot[id],
@@ -1441,7 +1453,7 @@ const adapter = new class QQBotAdapter {
       mode: 'websocket'
     }
 
-    if (Number(token[4])) opts.intents.push('GROUP_AT_MESSAGE_CREATE', 'C2C_MESSAGE_CREATE')
+    if (Number(token[4])) opts.intents.push('GROUP_AT_MESSAGE_CREATE', 'GROUP_MESSAGE_CREATE', 'C2C_MESSAGE_CREATE')
 
     if (Number(token[5])) opts.intents.push('GUILD_MESSAGES')
     else opts.intents.push('PUBLIC_GUILD_MESSAGES')
