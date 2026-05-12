@@ -1235,10 +1235,15 @@ const adapter = new class QQBotAdapter {
   }
 
   async makeMessage(id, event) {
-    // 消息审核结果（主动消息发送后由网关回推）
     if (event.message_type === 'audit') {
       Bot.makeLog('info', [`消息审核${event.sub_type === 'pass' ? '通过' : '不通过'}`, event], id)
-      Bot.em(`${event.post_type}.${event.message_type}.${event.sub_type}`, { ...event, self_id: id, bot: Bot[id] })
+      Bot.em(`notice.audit.${event.sub_type}`, {
+        ...event,
+        self_id: id,
+        bot: Bot[id],
+        post_type: 'notice',
+        notice_type: 'audit'
+      })
       return
     }
 
