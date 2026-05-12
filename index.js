@@ -1256,8 +1256,8 @@ const adapter = new class QQBotAdapter {
       sub_type: event.sub_type,
       message_id: event.message_id,
       get user_id() { return this.sender.user_id },
-      message: event.message,
-      raw_message: event.raw_message
+      message: event.message || [],
+      raw_message: event.raw_message || ''
     }
 
     for (const i of data.message) {
