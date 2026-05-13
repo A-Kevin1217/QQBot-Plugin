@@ -121,6 +121,188 @@ const adapter = new class QQBotAdapter {
     }
   }
 
+  async uploadToBilibili(data, buffer) {
+    const cookie = config.imgBed?.bilibili
+    if (!cookie) return
+    try {
+      const bili_jct = cookie.match(/bili_jct=([^;]+)/)?.[1]
+      const SESSDATA = cookie.match(/SESSDATA=([^;]+)/)?.[1]
+      if (!bili_jct || !SESSDATA) throw new Error('B站cookie无效')
+      const form = new FormData()
+      form.append('file_up', new Blob([buffer], { type: 'image/png' }), 'image.png')
+      form.append('csrf', bili_jct)
+      form.append('csrf_token', bili_jct)
+      const res = await fetch('https://api.bilibili.com/x/dynamic/feed/draw/upload_bfs', {
+        method: 'POST', body: form,
+        headers: { Cookie: cookie, 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+      })
+      const json = await res.json()
+      if (json.code === 0 && json.data?.image_url) return json.data.image_url
+      Bot.makeLog('warn', ['B站图床上传失败', json.message], data.self_id)
+    } catch (e) {
+      Bot.makeLog('warn', ['B站图床上传错误', e.message], data.self_id)
+    }
+  }
+
+  async uploadToHuaban(data, buffer) {
+    const cookie = config.imgBed?.huaban
+    if (!cookie) return
+    try {
+      const boundary = '----' + crypto.randomBytes(16).toString('hex')
+      const payload = Buffer.concat([
+        Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="image"\r\nContent-Type: image/png\r\n\r\n`),
+        buffer,
+        Buffer.from(`\r\n--${boundary}--`)
+      ])
+      const res = await fetch('https://api.huaban.com/upload', {
+        method: 'POST', body: payload,
+        headers: {
+          Cookie: cookie,
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      })
+      const json = await res.json()
+      if (json.key) return `https://hbimg.huabanimg.com/${json.key}`
+      Bot.makeLog('warn', ['花瓣网图床上传失败', json.msg], data.self_id)
+    } catch (e) {
+      Bot.makeLog('warn', ['花瓣网图床上传错误', e.message], data.self_id)
+    }
+  }
+
+  async uploadToTelegraph(data, buffer) {
+    const api = config.imgBed?.telegraph || 'https://tg.telegra.ph/upload'
+    try {
+      const form = new FormData()
+      form.append('file', new Blob([buffer], { type: 'image/jpeg' }), 'image.jpg')
+      const res = await fetch(`${api}?source=bugtracker`, { method: 'POST', body: form })
+      const json = await res.json()
+      if (json.src) return new URL(api).origin + json.src
+    } catch (e) {
+      Bot.makeLog('warn', ['Telegraph图床上传错误', e.message], data.self_id)
+    }
+  }
+
+  async uploadToGitcode(data, buffer) {
+    try {
+      const res = await fetch('https://bot.meml.xyz/api/img/gitcode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ base64: buffer.toString('base64') })
+      })
+      const json = await res.json()
+      if (json.url) return json.url
+    } catch (e) {
+      Bot.makeLog('warn', ['备用图床上传错误', e.message], data.self_id)
+    }
+  }
+
+  async uploadToCOS(data, buffer) {
+    const cosConfig = config.imgBed?.cos
+    if (!cosConfig?.createUploadKeyUrl || !cosConfig?.cosBucketUrlPrefix) return
+    try {
+      const ext = this.#detectImageExt(buffer) || 'jpg'
+      const mime = `image/${ext}`
+      const res = await fetch(`${cosConfig.createUploadKeyUrl}?ext=${ext}&ciProcess=sensitive-content-recognition`, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.7204.179 Mobile Safari/537.36',
+          'origin': 'https://cloud.tencent.com',
+          'referer': 'https://cloud.tencent.com/act/pro/ciExhibition'
+        }
+      })
+      const json = await res.json()
+      if (!json.data?.key || !json.data?.uploadAuthorization) throw new Error('获取COS凭证失败')
+      const uploadUrl = cosConfig.cosBucketUrlPrefix + json.data.key
+      const uploadRes = await fetch(uploadUrl, {
+        method: 'PUT', body: buffer,
+        headers: { 'Content-Type': mime, 'Authorization': json.data.uploadAuthorization }
+      })
+      if (uploadRes.ok) return uploadUrl
+    } catch (e) {
+      Bot.makeLog('warn', ['COS图床上传错误', e.message], data.self_id)
+    }
+  }
+
+  async uploadToQQChannel(data, buffer) {
+    const chConfig = config.imgBed?.qqchannel
+    if (!chConfig?.botQQ || !chConfig?.channelId) return
+    try {
+      const bot = Bot[chConfig.botQQ]
+      if (!bot?.sdk?.sessionManager?.access_token) return
+      const form = new FormData()
+      form.append('msg_id', '0')
+      form.append('file_image', new Blob([buffer], { type: 'image/jpeg' }), 'image.jpg')
+      const res = await fetch(`https://api.sgroup.qq.com/channels/${chConfig.channelId}/messages`, {
+        method: 'POST', body: form,
+        headers: {
+          Authorization: `QQBot ${bot.sdk.sessionManager.access_token}`,
+          'X-Union-Appid': bot.info.appid,
+          Accept: 'application/json'
+        }
+      })
+      if (res.ok) {
+        const md5 = crypto.createHash('md5').update(buffer).digest('hex').toUpperCase()
+        return `https://gchat.qpic.cn/qmeetpic/0/0-0-${md5}/0`
+      }
+    } catch (e) {
+      Bot.makeLog('warn', ['QQ频道图床上传错误', e.message], data.self_id)
+    }
+  }
+
+  #detectImageExt(buffer) {
+    if (buffer[0] === 0xFF && buffer[1] === 0xD8) return 'jpg'
+    if (buffer[0] === 0x89 && buffer[1] === 0x50) return 'png'
+    if (buffer[0] === 0x47 && buffer[1] === 0x49) return 'gif'
+    if (buffer[0] === 0x52 && buffer[1] === 0x49) return 'webp'
+    return 'jpg'
+  }
+
+  async uploadToImageBed(data, buffer) {
+    const md5 = crypto.createHash('md5').update(buffer).digest('hex')
+    const cacheKey = `Yunzai:QQBot:imgBed:${md5}`
+    const ttl = config.imgBed?.cache_ttl || 600
+
+    try {
+      const cached = await redis.get(cacheKey)
+      if (cached) {
+        try {
+          const res = await fetch(cached, { method: 'HEAD' })
+          if (res.ok) return cached
+          await redis.del(cacheKey)
+        } catch {
+          await redis.del(cacheKey)
+        }
+      }
+    } catch {}
+
+    const saveCache = async (url) => {
+      if (url) {
+        try { await redis.set(cacheKey, url, { EX: ttl }) } catch {}
+      }
+      return url
+    }
+
+    const bilibili = await this.uploadToBilibili(data, buffer)
+    if (bilibili) return saveCache(bilibili)
+
+    const huaban = await this.uploadToHuaban(data, buffer)
+    if (huaban) return saveCache(huaban)
+
+    const cos = await this.uploadToCOS(data, buffer)
+    if (cos) return saveCache(cos)
+
+    const qqchannel = await this.uploadToQQChannel(data, buffer)
+    if (qqchannel) return saveCache(qqchannel)
+
+    const telegraph = await this.uploadToTelegraph(data, buffer)
+    if (telegraph) return saveCache(telegraph)
+
+    const gitcode = await this.uploadToGitcode(data, buffer)
+    if (gitcode) return saveCache(gitcode)
+
+    return config.imgBed?.default || undefined
+  }
+
   async makeMarkdownImage(data, file, summary = '图片') {
     const buffer = await Bot.Buffer(file)
     const image =
@@ -155,6 +337,11 @@ const adapter = new class QQBotAdapter {
       if (res) {
         typeof res == 'object' ? Object.assign(image, res) : image.url = res
       }
+    }
+
+    if (!image.url?.startsWith?.('http')) {
+      const imgBedUrl = await this.uploadToImageBed(data, buffer)
+      if (imgBedUrl) image.url = imgBedUrl
     }
 
     return {

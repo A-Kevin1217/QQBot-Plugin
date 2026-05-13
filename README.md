@@ -82,6 +82,23 @@ TRSS-Yunzai QQBot 适配器 插件
 13. `config/QQBot.yaml`中`markdownImgScale: 1`是否对markdown中的图片进行等比例缩放,0.5为缩小50%,1.5为放大50%,以此类推
 14. `config/QQBot.yaml`中`sendButton: true`未开启全局MD时是否单独发送按钮
 15. `config/QQBot.yaml`中`dauDB: level`选择存储dau数据的数据库,可选: `level`, `redis`,以及`false`关闭dau统计(仅每日发言用户和群)
+16. `config/QQBot.yaml`中`imgBed`图床配置,当Bot上传图片失败时自动使用图床上传,支持多个图床回退,Redis缓存默认10分钟
+    ```yml
+    imgBed:
+      bilibili: '' # B站cookie,包含bili_jct和SESSDATA
+      huaban: '' # 花瓣网cookie
+      cos: # 腾讯COS图床(无需cookie)
+        createUploadKeyUrl: https://ci-exhibition.cloud.tencent.com/samples/createUploadKey
+        cosBucketUrlPrefix: https://your-bucket.cos.ap-chengdu.myqcloud.com/ # 替换为你的COS存储桶地址
+      qqchannel: # QQ频道图床(需要有频道权限的Bot)
+        botQQ: '123456' # 机器人QQ号
+        channelId: '611441080' # 频道ID
+      telegraph: https://tg.telegra.ph/upload # Telegraph上传API
+      default: '' # 所有图床失败时的备用图片URL
+      cache_ttl: 600 # Redis缓存过期时间(秒)
+    ```
+    - 未配置的图床会自动跳过,无需删除
+    - 图床回退顺序: B站 → 花瓣网 → COS → QQ频道 → Telegraph → gitcode备用 → 默认图片
     - `level`
       - 优点: 统计了大部分数据
       - 缺点: 缓存存一份,level存一份

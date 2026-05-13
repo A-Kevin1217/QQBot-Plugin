@@ -5,8 +5,8 @@ import fs from 'node:fs'
 let { config, configSave } = await makeConfig('QQBot', {
   tips: '',
   permission: 'master',
-  toQRCode: true,
-  toCallback: true,
+  toQRCode: false,
+  toCallback: false,
   toBotUpload: true,
   hideGuildRecall: false,
   toQQUin: false,
@@ -28,22 +28,15 @@ let { config, configSave } = await makeConfig('QQBot', {
   smallbtn: false,
   sep: '',
   dauDB: 'redis',
-  // dau: {
-  //   enable: true,
-  //   user_count: true,  // 上行消息人数
-  //   group_count: true, // 上行消息群数
-  //   msg_count: true,      // 上行消息量
-  //   send_count: true,     // 下行消息量
-  //   all_user_count: true, // 所有用户数
-  //   all_group_count: true, // 所有群组数
-  //   group_increase_count: true, // 新增群数量
-  //   group_decrease_count: true, // 减少群数量
-  // 新增用户数量
-  // 消息数量最多的用户
-  // 消息数量最多的群聊
-  // 昨日数据
-  // 平均数据
-  // },
+  imgBed: {
+    cos: { createUploadKeyUrl: 'https://ci-exhibition.cloud.tencent.com/samples/createUploadKey', cosBucketUrlPrefix: '' },
+    qqchannel: { botQQ: '', channelId: '' },
+    bilibili: '',
+    huaban: '',
+    telegraph: 'https://tg.telegra.ph/upload',
+    default: '',
+    cache_ttl: 600
+  },
   bot: {
     sandbox: false,
     maxRetry: Infinity,
