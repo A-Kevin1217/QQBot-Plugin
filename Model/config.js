@@ -23,6 +23,8 @@ let { config, configSave } = await makeConfig('QQBot', {
   filterLog: {},
   simplifiedSdkLog: false,
   markdownImgScale: 1.0,
+  stream: false,
+  smallbtn: false,
   sep: '',
   dauDB: 'redis',
   // dau: {
@@ -49,8 +51,8 @@ let { config, configSave } = await makeConfig('QQBot', {
   token: []
 }, {
   tips: [
-    '欢迎使用 TRSS-Yunzai QQBot Plugin ! 作者：时雨🌌星空 & 小叶',
-    '参考：https://github.com/XasYer/Yunzai-QQBot-Plugin'
+    '欢迎使用 TRSS-Yunzai QQBot Plugin ! 作者：时雨🌌星空 & 小叶 & 小丞',
+    '参考：https://github.com/A-Kevin1217/QQBot-Plugin'
   ]
 })
 
