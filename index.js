@@ -1346,14 +1346,14 @@ const adapter = new class QQBotAdapter {
         data.message_type = 'private'
         Bot.makeLog('info', [`好友按钮点击事件：[${data.user_id}]`, data.raw_message], data.self_id)
 
-        data.reply = msg => this.sendFriendMsg({ ...data, user_id: event.operator_id }, msg, { id: data.message_id })
+        data.reply = msg => this.sendFriendMsg({ ...data, user_id: event.operator_id }, msg, data._ret_id?.length ? { id: data._ret_id[0] } : undefined)
         await this.setFriendMap(data)
         break
       case 'group':
         data.group_id = `${id}${this.sep}${event.group_id}`
         Bot.makeLog('info', [`群按钮点击事件：[${data.group_id}, ${data.user_id}]`, data.raw_message], data.self_id)
 
-        data.reply = msg => this.sendGroupMsg({ ...data, group_id: event.group_id }, msg, { id: data.message_id })
+        data.reply = msg => this.sendGroupMsg({ ...data, group_id: event.group_id }, msg, data._ret_id?.length ? { id: data._ret_id[0] } : undefined)
         await this.setGroupMap(data)
         break
       case 'guild':
