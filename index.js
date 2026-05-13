@@ -96,6 +96,7 @@ const adapter = new class QQBotAdapter {
   }
 
   async makeRawMarkdownText(data, text, button) {
+    text = String(text ?? '')
     const match = text.match(this.toQRCodeRegExp)
     if (match) {
       for (const url of match) {
@@ -550,6 +551,7 @@ const adapter = new class QQBotAdapter {
   }
 
   makeMarkdownText(data, text, button) {
+    text = String(text ?? '')
     const match = text.match(this.toQRCodeRegExp)
     if (match) {
       for (const url of match) {
