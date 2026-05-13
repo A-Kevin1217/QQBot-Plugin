@@ -331,7 +331,13 @@ const adapter = new class QQBotAdapter {
           for (const { message } of i.data) { messages.push(...(await this.makeRawMarkdownMsg(data, message))) }
           continue
         case 'raw':
-          messages.push(Array.isArray(i.data) ? i.data : [i.data])
+          if (Array.isArray(i.data)) {
+            messages.push(i.data)
+          } else if (i.data && (i.data.type === 'keyboard' || i.data.type === 'button')) {
+            button.push(i.data)
+          } else {
+            messages.push([i.data])
+          }
           break
         case 'stream':
           data.stream = true
@@ -563,7 +569,13 @@ const adapter = new class QQBotAdapter {
           }
           continue
         case 'raw':
-          messages.push(Array.isArray(i.data) ? i.data : [i.data])
+          if (Array.isArray(i.data)) {
+            messages.push(i.data)
+          } else if (i.data && (i.data.type === 'keyboard' || i.data.type === 'button')) {
+            button.push(i.data)
+          } else {
+            messages.push([i.data])
+          }
           break
         case 'custom':
           template.push(...i.data)
