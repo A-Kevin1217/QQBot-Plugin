@@ -138,10 +138,7 @@ const adapter = new class QQBotAdapter {
       })
       const json = await res.json()
       if (json.code === 0 && json.data?.image_url) return json.data.image_url
-      Bot.makeLog('warn', ['B站图床上传失败', json.message], data.self_id)
-    } catch (e) {
-      Bot.makeLog('warn', ['B站图床上传错误', e.message], data.self_id)
-    }
+    } catch {}
   }
 
   async uploadToHuaban(data, buffer) {
@@ -164,10 +161,7 @@ const adapter = new class QQBotAdapter {
       })
       const json = await res.json()
       if (json.key) return `https://hbimg.huabanimg.com/${json.key}`
-      Bot.makeLog('warn', ['花瓣网图床上传失败', json.msg], data.self_id)
-    } catch (e) {
-      Bot.makeLog('warn', ['花瓣网图床上传错误', e.message], data.self_id)
-    }
+    } catch {}
   }
 
   async uploadToTelegraph(data, buffer) {
@@ -178,9 +172,7 @@ const adapter = new class QQBotAdapter {
       const res = await fetch(`${api}?source=bugtracker`, { method: 'POST', body: form })
       const json = await res.json()
       if (json.src) return new URL(api).origin + json.src
-    } catch (e) {
-      Bot.makeLog('warn', ['Telegraph图床上传错误', e.message], data.self_id)
-    }
+    } catch {}
   }
 
   async uploadToGitcode(data, buffer) {
@@ -192,9 +184,7 @@ const adapter = new class QQBotAdapter {
       })
       const json = await res.json()
       if (json.url) return json.url
-    } catch (e) {
-      Bot.makeLog('warn', ['备用图床上传错误', e.message], data.self_id)
-    }
+    } catch {}
   }
 
   async uploadToCOS(data, buffer) {
@@ -218,9 +208,7 @@ const adapter = new class QQBotAdapter {
         headers: { 'Content-Type': mime, 'Authorization': json.data.uploadAuthorization }
       })
       if (uploadRes.ok) return uploadUrl
-    } catch (e) {
-      Bot.makeLog('warn', ['COS图床上传错误', e.message], data.self_id)
-    }
+    } catch {}
   }
 
   async uploadToQQChannel(data, buffer) {
@@ -244,9 +232,7 @@ const adapter = new class QQBotAdapter {
         const md5 = crypto.createHash('md5').update(buffer).digest('hex').toUpperCase()
         return `https://gchat.qpic.cn/qmeetpic/0/0-0-${md5}/0`
       }
-    } catch (e) {
-      Bot.makeLog('warn', ['QQ频道图床上传错误', e.message], data.self_id)
-    }
+    } catch {}
   }
 
   #detectImageExt(buffer) {
@@ -282,24 +268,24 @@ const adapter = new class QQBotAdapter {
       return url
     }
 
-    const bilibili = await this.uploadToBilibili(data, buffer)
-    if (bilibili) return saveCache(bilibili)
+    const beds = [
+      ['B站', () => this.uploadToBilibili(data, buffer)],
+      ['花瓣网', () => this.uploadToHuaban(data, buffer)],
+      ['COS', () => this.uploadToCOS(data, buffer)],
+      ['QQ频道', () => this.uploadToQQChannel(data, buffer)],
+      ['Telegraph', () => this.uploadToTelegraph(data, buffer)],
+      ['gitcode', () => this.uploadToGitcode(data, buffer)]
+    ]
 
-    const huaban = await this.uploadToHuaban(data, buffer)
-    if (huaban) return saveCache(huaban)
+    for (const [name, upload] of beds) {
+      const url = await upload()
+      if (url) {
+        Bot.makeLog('debug', [`图床上传成功: ${name}`], data.self_id)
+        return saveCache(url)
+      }
+    }
 
-    const cos = await this.uploadToCOS(data, buffer)
-    if (cos) return saveCache(cos)
-
-    const qqchannel = await this.uploadToQQChannel(data, buffer)
-    if (qqchannel) return saveCache(qqchannel)
-
-    const telegraph = await this.uploadToTelegraph(data, buffer)
-    if (telegraph) return saveCache(telegraph)
-
-    const gitcode = await this.uploadToGitcode(data, buffer)
-    if (gitcode) return saveCache(gitcode)
-
+    Bot.makeLog('warn', ['图床上传失败，所有图床均不可用'], data.self_id)
     return config.imgBed?.default || undefined
   }
 
