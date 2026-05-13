@@ -1029,17 +1029,9 @@ const adapter = new class QQBotAdapter {
   sendFriendMsg(data, msg, event) {
     if (!event) event = {}
     if (data.smallbtn) event.smallbtn = true
-    return this.sendMsg(data, async msg => {
+    return this.sendMsg(data, msg => {
       if (data.smallbtn) event.smallbtn = true
-      try {
-        return await data.bot.sdk.sendPrivateMessage(data.user_id, msg, event, { stream: data.stream || false })
-      } catch (err) {
-        if (event.id && (err.message?.includes('reply msg exceed limit') || err.message?.includes('40034024') || err.message?.includes('msg_id无效'))) {
-          Bot.makeLog('debug', ['回复消息无效，改用主动发送'], data.self_id)
-          return data.bot.sdk.sendPrivateMessage(data.user_id, msg, {}, { stream: data.stream || false })
-        }
-        throw err
-      }
+      return data.bot.sdk.sendPrivateMessage(data.user_id, msg, event, { stream: data.stream || false })
     }, msg)
   }
 
@@ -1064,17 +1056,9 @@ const adapter = new class QQBotAdapter {
         return res
       }
     }
-    return this.sendMsg(data, async msg => {
+    return this.sendMsg(data, msg => {
       if (data.smallbtn) event.smallbtn = true
-      try {
-        return await data.bot.sdk.sendGroupMessage(data.group_id, msg, event, { stream: data.stream || false })
-      } catch (err) {
-        if (event.id && (err.message?.includes('reply msg exceed limit') || err.message?.includes('40034024') || err.message?.includes('msg_id无效'))) {
-          Bot.makeLog('debug', ['回复消息无效，改用主动发送'], data.self_id)
-          return data.bot.sdk.sendGroupMessage(data.group_id, msg, {}, { stream: data.stream || false })
-        }
-        throw err
-      }
+      return data.bot.sdk.sendGroupMessage(data.group_id, msg, event, { stream: data.stream || false })
     }, msg)
   }
 
@@ -2250,22 +2234,6 @@ const adapter = new class QQBotAdapter {
       return false
     }
     await Bot[id].dau.init()
-
-    const wrapSend = (fn) => async (target, msg, event = {}, ...args) => {
-      try {
-        return await fn(target, msg, event, ...args)
-      } catch (err) {
-        if (event.id && (err.message?.includes('reply msg exceed limit') || err.message?.includes('40034024') || err.message?.includes('msg_id无效'))) {
-          Bot.makeLog('debug', ['回复消息无效，改用主动发送'], id)
-          return fn(target, msg, {}, ...args)
-        }
-        throw err
-      }
-    }
-    const sdk = Bot[id].sdk
-    sdk.sendGroupMessage = wrapSend(sdk.sendGroupMessage.bind(sdk))
-    sdk.sendPrivateMessage = wrapSend(sdk.sendPrivateMessage.bind(sdk))
-    sdk.sendDirectMessage = wrapSend(sdk.sendDirectMessage.bind(sdk))
 
     Bot[id].sdk.on('message', event => this.makeMessage(id, event))
     Bot[id].sdk.on('notice', event => this.makeNotice(id, event))
