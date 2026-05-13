@@ -13,9 +13,7 @@ let { config, configSave } = await makeConfig('QQBot', {
   toImg: true,
   callStats: false,
   userStats: false,
-  markdown: {
-    template: 'abcdefghij'
-  },
+  markdown: {},
   sendButton: true,
   customMD: {},
   mdSuffix: {},

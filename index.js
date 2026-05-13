@@ -572,7 +572,7 @@ const adapter = new class QQBotAdapter {
     } else {
       const custom = config.customMD?.[data.self_id]
       custom_template_id = custom?.custom_template_id || config.markdown[data.self_id]
-      keys = _.cloneDeep(custom?.keys) || config.markdown.template.split('')
+      keys = _.cloneDeep(custom?.keys) || []
     }
     for (const temp of template) {
       if (!temp.length) continue
@@ -630,7 +630,7 @@ const adapter = new class QQBotAdapter {
     let template = []
     let content = ''
     let reply
-    const length = markdown_template?.params?.length || config.customMD?.[data.self_id]?.keys?.length || config.markdown.template.length
+    const length = markdown_template?.params?.length || config.customMD?.[data.self_id]?.keys?.length || 0
 
     for (let i of Array.isArray(msg) ? msg : [msg]) {
       if (typeof i == 'object') i = { ...i }
@@ -997,9 +997,10 @@ const adapter = new class QQBotAdapter {
       }
     }
 
-    if ((config.markdown[data.self_id] || (data.toQQBotMD === true && config.customMD[data.self_id])) && data.toQQBotMD !== false) {
-      if (config.markdown[data.self_id] == 'raw') msgs = await this.makeRawMarkdownMsg(data, msg)
-      else msgs = await this.makeMarkdownMsg(data, msg)
+    if (data.toQQBotMD !== false) {
+      const mdConfig = config.markdown[data.self_id]
+      if (mdConfig && mdConfig !== 'raw') msgs = await this.makeMarkdownMsg(data, msg)
+      else msgs = await this.makeRawMarkdownMsg(data, msg)
 
       const [mds, btns] = _.partition(msgs[0], v => v.type === 'markdown')
       if (mds.length > 1) {

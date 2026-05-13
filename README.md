@@ -135,4 +135,4 @@ TRSS-Yunzai QQBot 适配器 插件
 
 - #QQBot账号
 - #QQBot设置 + `机器人QQ号:AppID:Token:AppSecret:是否群Bot:是否频道私域`（是1 否0）
-- #QQBotMD + `机器人QQ号:raw`（需要原生MD按钮权限）
+- #QQBotMD + `机器人QQ号:raw`（默认使用raw模式，设置模板ID可切换为模板模式）
