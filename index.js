@@ -1999,7 +1999,7 @@ const adapter = new class QQBotAdapter {
       bot: Bot[id],
       self_id: id,
       post_type: 'message',
-      message_id: event.notice_id || event.event_id,
+      message_id: '',
       message_type: event.notice_type,
       sub_type: 'callback',
       get user_id() { return this.sender.user_id },
@@ -2011,7 +2011,6 @@ const adapter = new class QQBotAdapter {
     const callback = data.bot.callback[event.data?.resolved?.button_id]
     if (callback) {
       if (!event.group_id && callback.group_id) { event.group_id = callback.group_id }
-      data.message_id = callback.id
       data.message.push({ type: 'text', text: callback.message })
       data.raw_message += callback.message
     } else {
