@@ -1034,8 +1034,8 @@ const adapter = new class QQBotAdapter {
       try {
         return await data.bot.sdk.sendPrivateMessage(data.user_id, msg, event, { stream: data.stream || false })
       } catch (err) {
-        if (event.id && err.message?.includes('reply msg exceed limit')) {
-          Bot.makeLog('debug', ['回复消息过期，改用主动发送'], data.self_id)
+        if (event.id && (err.message?.includes('reply msg exceed limit') || err.message?.includes('40034024') || err.message?.includes('msg_id无效'))) {
+          Bot.makeLog('debug', ['回复消息无效，改用主动发送'], data.self_id)
           return data.bot.sdk.sendPrivateMessage(data.user_id, msg, {}, { stream: data.stream || false })
         }
         throw err
@@ -1069,8 +1069,8 @@ const adapter = new class QQBotAdapter {
       try {
         return await data.bot.sdk.sendGroupMessage(data.group_id, msg, event, { stream: data.stream || false })
       } catch (err) {
-        if (event.id && err.message?.includes('reply msg exceed limit')) {
-          Bot.makeLog('debug', ['回复消息过期，改用主动发送'], data.self_id)
+        if (event.id && (err.message?.includes('reply msg exceed limit') || err.message?.includes('40034024') || err.message?.includes('msg_id无效'))) {
+          Bot.makeLog('debug', ['回复消息无效，改用主动发送'], data.self_id)
           return data.bot.sdk.sendGroupMessage(data.group_id, msg, {}, { stream: data.stream || false })
         }
         throw err
@@ -2255,8 +2255,8 @@ const adapter = new class QQBotAdapter {
       try {
         return await fn(target, msg, event, ...args)
       } catch (err) {
-        if (event.id && err.message?.includes('reply msg exceed limit')) {
-          Bot.makeLog('debug', ['回复消息过期，改用主动发送'], id)
+        if (event.id && (err.message?.includes('reply msg exceed limit') || err.message?.includes('40034024') || err.message?.includes('msg_id无效'))) {
+          Bot.makeLog('debug', ['回复消息无效，改用主动发送'], id)
           return fn(target, msg, {}, ...args)
         }
         throw err
