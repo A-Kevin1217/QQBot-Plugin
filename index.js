@@ -1497,6 +1497,22 @@ const adapter = new class QQBotAdapter {
     return this.recallMsg(data, i => data.bot.sdk.recallGuildMessage(data.channel_id, i, hide), message_id)
   }
 
+  sendWakeUp(data, message) {
+    return this.sendMsg(data, msg => data.bot.sdk.messageService.sendRecallMessage(`/v2/users/${data.user_id}`, msg), message)
+  }
+
+  async sendInputNotify(data, input_second) {
+    try {
+      await data.bot.sdk.request.post(`/v2/users/${data.user_id}/messages`, {
+        msg_type: 6,
+        input_notify: { input_type: 1, input_second: input_second || 30 },
+        msg_id: data.message_id
+      })
+    } catch (err) {
+      Bot.makeLog('debug', ['发送输入状态通知错误', err], data.self_id)
+    }
+  }
+
   sendGuildMsg(data, msg, event) {
     return this.sendGMsg(data, msg => data.bot.sdk.sendGuildMessage(data.channel_id, msg, event), msg)
   }
@@ -1514,6 +1530,7 @@ const adapter = new class QQBotAdapter {
     return {
       ...i,
       sendMsg: msg => this.sendFriendMsg(i, msg),
+      sendWakeUp: message => this.sendWakeUp(i, message),
       recallMsg: message_id => this.recallFriendMsg(i, message_id),
       getAvatarUrl: () => `https://q.qlogo.cn/qqapp/${i.bot.info.appid}/${i.user_id}/0`
     }
@@ -1611,6 +1628,7 @@ const adapter = new class QQBotAdapter {
       user_id: `${data.self_id}${this.sep}${event.sender.user_id}`
     }
     Bot.makeLog('info', `好友消息：[${data.user_id}] ${data.raw_message}`, data.self_id)
+    data.sendInputNotify = input_second => this.sendInputNotify(data, input_second)
     data.reply = msg => this.sendFriendMsg({
       ...data, user_id: event.sender.user_id
     }, msg, { id: data.message_id })
@@ -1634,7 +1652,7 @@ const adapter = new class QQBotAdapter {
     const filterLog = config.filterLog?.[data.self_id] || []
     let logStat = filterLog.includes(_.trim(data.raw_message)) ? 'debug' : 'info'
     Bot.makeLog(logStat, `群消息：[${data.group_id}, ${data.user_id}] ${data.raw_message}`, data.self_id)
-
+    data.sendInputNotify = input_second => this.sendInputNotify(data, input_second)
     data.reply = msg => this.sendGroupMsg({
       ...data, group_id: event.group_id
     }, msg, { id: data.message_id })
@@ -1654,6 +1672,7 @@ const adapter = new class QQBotAdapter {
       src_guild_id: event.src_guild_id
     }
     Bot.makeLog('info', `频道私聊消息：[${data.sender.nickname}(${data.user_id})] ${data.raw_message}`, data.self_id)
+    data.sendInputNotify = input_second => this.sendInputNotify(data, input_second)
     data.reply = msg => this.sendDirectMsg({
       ...data,
       user_id: event.user_id,
@@ -1684,6 +1703,7 @@ const adapter = new class QQBotAdapter {
     }
     data.group_id = `qg_${event.guild_id}-${event.channel_id}`
     Bot.makeLog('info', `频道消息：[${data.group_id}, ${data.sender.nickname}(${data.user_id})] ${data.raw_message}`, data.self_id)
+    data.sendInputNotify = input_second => this.sendInputNotify(data, input_second)
     data.reply = msg => this.sendGuildMsg({
       ...data,
       guild_id: event.guild_id,
@@ -1730,6 +1750,8 @@ const adapter = new class QQBotAdapter {
       })
       return
     }
+
+    if (event.author?.bot && config.filter_bot_msg) return true
 
     const data = {
       raw: event,
@@ -1792,12 +1814,16 @@ const adapter = new class QQBotAdapter {
       }
     }
 
+    const interactionEventId = event.notice_id?.startsWith?.('INTERACTION_CREATE:')
+      ? event.notice_id
+      : `INTERACTION_CREATE:${event.notice_id}`
+
     const data = {
       raw: event,
       bot: Bot[id],
       self_id: id,
       post_type: 'message',
-      message_id: event.notice_id,
+      message_id: event.notice_id || event.event_id,
       message_type: event.notice_type,
       sub_type: 'callback',
       get user_id() { return this.sender.user_id },
@@ -1810,17 +1836,9 @@ const adapter = new class QQBotAdapter {
     if (callback) {
       if (!event.group_id && callback.group_id) { event.group_id = callback.group_id }
       data.message_id = callback.id
-      if (callback.message_id.length) {
-        for (const id of callback.message_id) { data.message.push({ type: 'reply', id }) }
-        data.raw_message += `[回复：${callback.message_id}]`
-      }
       data.message.push({ type: 'text', text: callback.message })
       data.raw_message += callback.message
     } else {
-      if (event.data?.resolved?.button_id) {
-        data.message.push({ type: 'reply', id: event.data?.resolved?.button_id })
-        data.raw_message += `[回复：${event.data?.resolved?.button_id}]`
-      }
       if (event.data?.resolved?.button_data) {
         data.message.push({ type: 'text', text: event.data?.resolved?.button_data })
         data.raw_message += event.data?.resolved?.button_data
@@ -1830,20 +1848,32 @@ const adapter = new class QQBotAdapter {
     }
     event.reply(0)
 
+    const wrapWithEventId = (msg) => {
+      msg = Array.isArray(msg) ? [...msg] : [msg]
+      msg.unshift({ type: 'reply', id: `event_${interactionEventId}` })
+      return msg
+    }
+
     switch (data.message_type) {
       case 'direct':
       case 'friend':
         data.message_type = 'private'
         Bot.makeLog('info', [`好友按钮点击事件：[${data.user_id}]`, data.raw_message], data.self_id)
-
-        data.reply = msg => this.sendFriendMsg({ ...data, user_id: event.operator_id }, msg, data._ret_id?.length ? { id: data._ret_id[0] } : undefined)
+        data.reply = msg => this.sendFriendMsg(
+          { ...data, user_id: event.operator_id },
+          wrapWithEventId(msg),
+          { event_id: `event_${interactionEventId}` }
+        )
         await this.setFriendMap(data)
         break
       case 'group':
         data.group_id = `${id}${this.sep}${event.group_id}`
         Bot.makeLog('info', [`群按钮点击事件：[${data.group_id}, ${data.user_id}]`, data.raw_message], data.self_id)
-
-        data.reply = msg => this.sendGroupMsg({ ...data, group_id: event.group_id }, msg, data._ret_id?.length ? { id: data._ret_id[0] } : undefined)
+        data.reply = msg => this.sendGroupMsg(
+          { ...data, group_id: event.group_id },
+          wrapWithEventId(msg),
+          { event_id: `event_${interactionEventId}` }
+        )
         await this.setGroupMap(data)
         break
       case 'guild':
@@ -2081,7 +2111,8 @@ const setMap = {
   调用统计: 'callStats',
   用户统计: 'userStats',
   流式: 'stream',
-  小按钮: 'smallbtn'
+  小按钮: 'smallbtn',
+  机器人消息过滤: 'filter_bot_msg'
 }
 
 export class QQBotAdapter extends plugin {
@@ -2151,10 +2182,12 @@ export class QQBotAdapter extends plugin {
   }
 
   help() {
-    this.reply([' ', segment.button(
+    this.reply(['# QQBot 帮助', segment.button(
       [
         { text: 'dau', callback: '#QQBotdau' },
-        { text: 'daupro', callback: '#QQBotdaupro' },
+        { text: 'daupro', callback: '#QQBotdaupro' }
+      ],
+      [
         { text: '调用统计', callback: '#QQBot调用统计' },
         { text: '用户统计', callback: '#QQBot用户统计' }
       ],
@@ -2163,11 +2196,12 @@ export class QQBotAdapter extends plugin {
         { text: `${config.callStats ? '关闭' : '开启'}调用统计`, callback: `#QQBot设置调用统计${config.callStats ? '关闭' : '开启'}` }
       ],
       [
-        { text: `${config.userStats ? '关闭' : '开启'}用户统计`, callback: `#QQBot设置用户统计${config.userStats ? '关闭' : '开启'}` }
+        { text: `${config.userStats ? '关闭' : '开启'}用户统计`, callback: `#QQBot设置用户统计${config.userStats ? '关闭' : '开启'}` },
+        { text: `${config.stream ? '关闭' : '开启'}流式`, callback: `#QQBot设置流式${config.stream ? '关闭' : '开启'}` }
       ],
       [
-        { text: `${config.stream ? '关闭' : '开启'}流式`, callback: `#QQBot设置流式${config.stream ? '关闭' : '开启'}` },
-        { text: `${config.smallbtn ? '关闭' : '开启'}小按钮`, callback: `#QQBot设置小按钮${config.smallbtn ? '关闭' : '开启'}` }
+        { text: `${config.smallbtn ? '关闭' : '开启'}小按钮`, callback: `#QQBot设置小按钮${config.smallbtn ? '关闭' : '开启'}` },
+        { text: `${config.filter_bot_msg ? '关闭' : '开启'}机器人消息过滤`, callback: `#QQBot设置机器人消息过滤${config.filter_bot_msg ? '关闭' : '开启'}` }
       ]
     )])
   }
