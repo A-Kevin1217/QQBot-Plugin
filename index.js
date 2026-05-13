@@ -238,6 +238,14 @@ const adapter = new class QQBotAdapter {
       }
     } else return false
 
+    if (button.modal) {
+      msg.action.modal = {
+        content: button.modal.content || '确认执行？',
+        confirm_text: button.modal.confirm_text || '确认',
+        cancel_text: button.modal.cancel_text || '取消',
+      }
+    }
+
     if (button.permission) {
       if (button.permission == 'admin') {
         msg.action.permission.type = 1
