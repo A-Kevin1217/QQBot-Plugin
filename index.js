@@ -2251,6 +2251,22 @@ const adapter = new class QQBotAdapter {
     }
     await Bot[id].dau.init()
 
+    const wrapSend = (fn) => async (target, msg, event = {}, ...args) => {
+      try {
+        return await fn(target, msg, event, ...args)
+      } catch (err) {
+        if (event.id && err.message?.includes('reply msg exceed limit')) {
+          Bot.makeLog('debug', ['回复消息过期，改用主动发送'], id)
+          return fn(target, msg, {}, ...args)
+        }
+        throw err
+      }
+    }
+    const sdk = Bot[id].sdk
+    sdk.sendGroupMessage = wrapSend(sdk.sendGroupMessage.bind(sdk))
+    sdk.sendPrivateMessage = wrapSend(sdk.sendPrivateMessage.bind(sdk))
+    sdk.sendDirectMessage = wrapSend(sdk.sendDirectMessage.bind(sdk))
+
     Bot[id].sdk.on('message', event => this.makeMessage(id, event))
     Bot[id].sdk.on('notice', event => this.makeNotice(id, event))
 
