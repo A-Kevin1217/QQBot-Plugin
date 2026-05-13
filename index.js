@@ -212,7 +212,7 @@ const adapter = new class QQBotAdapter {
         // setTimeout(() => delete data.bot.callback[msg.id], 300000)
       } else {
         msg.action = {
-          type: button.type ?? 2,
+          type: button.type ?? 1,
           permission: { type: 2 },
           data: button.callback,
           enter: true,
