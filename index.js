@@ -1028,9 +1028,17 @@ const adapter = new class QQBotAdapter {
   sendFriendMsg(data, msg, event) {
     if (!event) event = {}
     if (data.smallbtn) event.smallbtn = true
-    return this.sendMsg(data, msg => {
+    return this.sendMsg(data, async msg => {
       if (data.smallbtn) event.smallbtn = true
-      return data.bot.sdk.sendPrivateMessage(data.user_id, msg, event, { stream: data.stream || false })
+      try {
+        return await data.bot.sdk.sendPrivateMessage(data.user_id, msg, event, { stream: data.stream || false })
+      } catch (err) {
+        if (event.id && err.message?.includes('reply msg exceed limit')) {
+          Bot.makeLog('debug', ['回复消息过期，改用主动发送'], data.self_id)
+          return data.bot.sdk.sendPrivateMessage(data.user_id, msg, {}, { stream: data.stream || false })
+        }
+        throw err
+      }
     }, msg)
   }
 
@@ -1055,9 +1063,17 @@ const adapter = new class QQBotAdapter {
         return res
       }
     }
-    return this.sendMsg(data, msg => {
+    return this.sendMsg(data, async msg => {
       if (data.smallbtn) event.smallbtn = true
-      return data.bot.sdk.sendGroupMessage(data.group_id, msg, event, { stream: data.stream || false })
+      try {
+        return await data.bot.sdk.sendGroupMessage(data.group_id, msg, event, { stream: data.stream || false })
+      } catch (err) {
+        if (event.id && err.message?.includes('reply msg exceed limit')) {
+          Bot.makeLog('debug', ['回复消息过期，改用主动发送'], data.self_id)
+          return data.bot.sdk.sendGroupMessage(data.group_id, msg, {}, { stream: data.stream || false })
+        }
+        throw err
+      }
     }, msg)
   }
 
