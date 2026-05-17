@@ -26,6 +26,22 @@ const QQBot = await (async () => {
       const { QQEvent, EventParserMap } = await import(`${pkg}/lib/event/index.js`)
       QQEvent.GROUP_MESSAGE_CREATE = 'message.group'
       EventParserMap.set(QQEvent.GROUP_MESSAGE_CREATE, EventParserMap.get(QQEvent.GROUP_AT_MESSAGE_CREATE))
+      // 还原 SDK 在 Message.parse 中 delete 掉的 mentions 字段，供 adapter 判定 @ 目标
+      try {
+        const { Message } = await import(`${pkg}/lib/message.js`)
+        if (Message?.parse && !Message.parse.__qqbotMentionsPatched) {
+          const _origParse = Message.parse
+          Message.parse = function (payload) {
+            const savedMentions = payload?.mentions
+            const ret = _origParse.call(this, payload)
+            if (savedMentions !== undefined) payload.mentions = savedMentions
+            return ret
+          }
+          Message.parse.__qqbotMentionsPatched = true
+        }
+      } catch (e) {
+        logger.warn(`[QQBot] mentions 字段还原 patch 失败: ${e?.message || e}`)
+      }
       return Bot
     } catch (e) {}
   }
