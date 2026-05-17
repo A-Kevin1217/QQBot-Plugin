@@ -1927,7 +1927,12 @@ const adapter = new class QQBotAdapter {
       return
     }
 
-    if (event.author?.bot && config.filter_bot_msg) return true
+    if (config.filter_bot_msg) {
+      // 发送方本身是机器人，直接丢弃
+      if (event.author?.bot) return true
+      // 消息里 @ 了别的机器人（bot=true 且不是当前 Bot），丢弃
+      if (Array.isArray(event.mentions) && event.mentions.some(m => m?.bot === true && m?.is_you !== true)) return true
+    }
 
     const data = {
       raw: event,
