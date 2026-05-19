@@ -1931,14 +1931,21 @@ const adapter = new class QQBotAdapter {
   }
 
   async makeMessage(id, event) {
-    if (event.message_type === 'audit') {
-      Bot.makeLog('info', [`消息审核${event.sub_type === 'pass' ? '通过' : '不通过'}`, event], id)
-      Bot.em(`notice.audit.${event.sub_type}`, {
+    // 消息审核事件：兼容 SDK 不同版本的字段标识
+    const isAuditEvent = event.message_type === 'audit'
+      || event.constructor?.name === 'MessageAuditEvent'
+      || typeof event.audit_id !== 'undefined'
+      || typeof event.is_passed === 'boolean'
+    if (isAuditEvent) {
+      const subType = event.sub_type || (event.is_passed === true ? 'pass' : event.is_passed === false ? 'reject' : 'unknown')
+      Bot.makeLog('info', [`消息审核${subType === 'pass' ? '通过' : subType === 'reject' ? '不通过' : '未知'}`, event], id)
+      Bot.em(`notice.audit.${subType}`, {
         ...event,
         self_id: id,
         bot: Bot[id],
         post_type: 'notice',
-        notice_type: 'audit'
+        notice_type: 'audit',
+        sub_type: subType
       })
       return
     }
