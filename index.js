@@ -1944,7 +1944,7 @@ const adapter = new class QQBotAdapter {
         guild_id: event.guild_id,
         channel_id: event.channel_id
       }
-      Bot.makeLog('info', `消息审核${subType === 'pass' ? '通过' : subType === 'reject' ? '不通过' : '未知'} ${JSON.stringify(auditInfo)}`, id)
+      Bot.makeLog('info', `主动消息审核${subType === 'pass' ? '通过' : subType === 'reject' ? '不通过' : '未知'} ${JSON.stringify(auditInfo)}`, id)
       Bot.em(`notice.audit.${subType}`, {
         ...event,
         self_id: id,
