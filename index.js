@@ -1950,6 +1950,9 @@ const adapter = new class QQBotAdapter {
       if (Array.isArray(event.mentions) && event.mentions.some(m => m?.bot === true && m?.is_you !== true)) return true
     }
 
+    const mentionAtIds = Array.isArray(event.mentions)
+      ? _.uniq(event.mentions.flatMap(m => [m.id, m.member_openid, m.user_id, m.openid]).filter(Boolean))
+      : []
     const selfBotMentionIds = Array.isArray(event.mentions)
       ? event.mentions
         .filter(m => m?.bot === true && m?.is_you === true)
@@ -1978,7 +1981,8 @@ const adapter = new class QQBotAdapter {
       message_id: event.message_id,
       get user_id() { return this.sender.user_id },
       message,
-      raw_message
+      raw_message,
+      at: mentionAtIds
     }
 
     for (const i of data.message) {
@@ -1986,6 +1990,7 @@ const adapter = new class QQBotAdapter {
         case 'at':
           if (data.message_type == 'group') i.qq = `${data.self_id}${this.sep}${i.user_id}`
           else i.qq = `qg_${i.user_id}`
+          if (i.user_id && !data.at.includes(i.user_id)) data.at.push(i.user_id)
           break
       }
     }
