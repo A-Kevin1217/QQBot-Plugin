@@ -302,10 +302,14 @@ const adapter = new class QQBotAdapter {
       }
     }
 
-    // 所有图床都失败：使用用户配置的默认图，没配则使用内置占位图
-    const fallbackUrl = config.imgBed?.default || 'https://placehold.co/512x512/png?text=Image+Unavailable'
-    Bot.makeLog('warn', [`图床上传失败，所有图床均不可用，使用默认图：${fallbackUrl}`], data.self_id)
-    return fallbackUrl
+    // 所有图床都失败：用户配了默认图就用，否则放弃发送
+    const fallbackUrl = config.imgBed?.default
+    if (fallbackUrl) {
+      Bot.makeLog('warn', [`图床上传失败，所有图床均不可用，使用默认图：${fallbackUrl}`], data.self_id)
+      return fallbackUrl
+    }
+    Bot.makeLog('warn', ['图床上传失败，所有图床均不可用，且未配置默认图，本次不发送'], data.self_id)
+    return undefined
   }
 
   async makeMarkdownImage(data, file, summary = '图片') {
@@ -348,6 +352,9 @@ const adapter = new class QQBotAdapter {
       const imgBedUrl = await this.uploadToImageBed(data, buffer)
       if (imgBedUrl) image.url = imgBedUrl
     }
+
+    // 没有可用的外网 URL（且未配置默认图），跳过该图片
+    if (!image.url?.startsWith?.('http')) return null
 
     return {
       des: `![${summary} #${image.width || 0}px #${image.height || 0}px]`,
@@ -502,8 +509,9 @@ const adapter = new class QQBotAdapter {
           content += await this.makeRawMarkdownText(data, i.text, button)
           break
         case 'image': {
-          const { des, url } = await this.makeMarkdownImage(data, i.file, i.summary)
-          content += `${des}${url}`
+          const res = await this.makeMarkdownImage(data, i.file, i.summary)
+          if (!res) break
+          content += `${res.des}${res.url}`
           break
         } case 'markdown':
           if (typeof i.data == 'object') messages.push([{ type: 'markdown', ...i.data }])
@@ -736,7 +744,9 @@ const adapter = new class QQBotAdapter {
             continue
           }
         case 'image': {
-          const { des, url } = await this.makeMarkdownImage(data, i.file, i.summary)
+          const res = await this.makeMarkdownImage(data, i.file, i.summary)
+          if (!res) break
+          const { des, url } = res
           const limit = template.length % (length - 1)
 
           // 图片数量超过模板长度时
