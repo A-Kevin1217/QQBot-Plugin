@@ -1987,6 +1987,13 @@ const adapter = new class QQBotAdapter {
         .map(i => i?.type === 'text' ? { ...i, text: String(i.text || '').replace(mentionReg, '').replace(/[ \t]{2,}/g, ' ').trim() } : i)
     }
 
+    // 计算 at 相关字段：参考 ts-yf 实现，优先取最后一个非 bot 的 mention
+    const mentions = Array.isArray(event.mentions) ? event.mentions : []
+    let atUser = mentions.length ? [...mentions].reverse().find(m => !m.bot) : null
+    if (!atUser && mentions.length) atUser = mentions.at(-1)
+    const atOpenid = atUser?.member_openid || atUser?.id || null
+    const atStr = atOpenid ? `${id}:${atOpenid}` : null
+
     const data = {
       raw: event,
       bot: Bot[id],
@@ -1998,7 +2005,10 @@ const adapter = new class QQBotAdapter {
       get user_id() { return this.sender.user_id },
       message,
       raw_message,
-      at: mentionAtIds
+      mentions,
+      at: atStr,
+      atall: mentions.some(m => m.scope === 'all'),
+      atme: !!(atStr && atUser?.is_you)
     }
 
     for (const i of data.message) {
@@ -2006,7 +2016,6 @@ const adapter = new class QQBotAdapter {
         case 'at':
           if (data.message_type == 'group') i.qq = `${data.self_id}${this.sep}${i.user_id}`
           else i.qq = `qg_${i.user_id}`
-          if (i.user_id && !data.at.includes(i.user_id)) data.at.push(i.user_id)
           break
       }
     }
