@@ -1950,6 +1950,24 @@ const adapter = new class QQBotAdapter {
       if (Array.isArray(event.mentions) && event.mentions.some(m => m?.bot === true && m?.is_you !== true)) return true
     }
 
+    const selfBotMentionIds = Array.isArray(event.mentions)
+      ? event.mentions
+        .filter(m => m?.bot === true && m?.is_you === true)
+        .flatMap(m => [m.id, m.member_openid])
+        .filter(Boolean)
+      : []
+    const rawMessage = event.raw_message || event.content || ''
+    let message = event.message || []
+    let raw_message = rawMessage
+    if (selfBotMentionIds.length) {
+      const mentionReg = new RegExp(selfBotMentionIds.map(i => `<@${_.escapeRegExp(i)}>`).join('|'), 'g')
+      raw_message = raw_message.replace(mentionReg, '').replace(/[ \t]{2,}/g, ' ').trim()
+      if (event.content) event.content = event.content.replace(mentionReg, '').replace(/[ \t]{2,}/g, ' ').trim()
+      message = message
+        .filter(i => !(i?.type === 'at' && selfBotMentionIds.includes(i.user_id)))
+        .map(i => i?.type === 'text' ? { ...i, text: String(i.text || '').replace(mentionReg, '').replace(/[ \t]{2,}/g, ' ').trim() } : i)
+    }
+
     const data = {
       raw: event,
       bot: Bot[id],
@@ -1959,8 +1977,8 @@ const adapter = new class QQBotAdapter {
       sub_type: event.sub_type,
       message_id: event.message_id,
       get user_id() { return this.sender.user_id },
-      message: event.message || [],
-      raw_message: event.raw_message || ''
+      message,
+      raw_message
     }
 
     for (const i of data.message) {
