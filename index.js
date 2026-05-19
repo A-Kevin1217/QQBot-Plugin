@@ -22,13 +22,8 @@ const QQBot = await (async () => {
   for (const pkg of ['qq-official-bot', 'qq-group-bot']) {
     try {
       const { Bot } = await import(pkg)
-      // 兼容官方新增的 GROUP_MESSAGE_CREATE（群全量消息）事件，复用群 @ 消息的解析器
-      const { QQEvent, EventParserMap } = await import(`${pkg}/lib/event/index.js`)
-      QQEvent.GROUP_MESSAGE_CREATE = 'message.group'
-      EventParserMap.set(QQEvent.GROUP_MESSAGE_CREATE, EventParserMap.get(QQEvent.GROUP_AT_MESSAGE_CREATE))
-      // 还原 SDK 在 Message.parse 中 delete 掉的 mentions 字段，供 adapter 判定 @ 目标
       try {
-        const { Message } = await import(`${pkg}/lib/message.js`)
+        const { Message } = await import(`${pkg}/lib/message/parser.js`)
         if (Message?.parse && !Message.parse.__qqbotMentionsPatched) {
           const _origParse = Message.parse
           Message.parse = function (payload) {
@@ -46,6 +41,27 @@ const QQBot = await (async () => {
     } catch (e) {}
   }
 })()
+
+function adaptSendableForSDK(msg) {
+  if (msg == null) return msg
+  if (typeof msg === 'string') return msg
+  if (Array.isArray(msg)) return msg.map(adaptSendableForSDK)
+  if (typeof msg !== 'object') return msg
+  if (msg.data && typeof msg.data === 'object') return msg
+  const { type, ...rest } = msg
+  return { type, data: rest }
+}
+
+function flattenReceivedMessage(msg) {
+  if (!Array.isArray(msg)) return msg
+  return msg.map(i => {
+    if (!i || typeof i !== 'object') return i
+    if (i.data && typeof i.data === 'object' && !i.text && !i.qq && !i.url && !i.file) {
+      return { type: i.type, ...i.data }
+    }
+    return i
+  })
+}
 
 const startTime = new Date()
 logger.info(logger.yellow('- 正在加载 QQBot 适配器插件'))
@@ -1047,7 +1063,7 @@ const adapter = new class QQBotAdapter {
     if (data.smallbtn) event.smallbtn = true
     return this.sendMsg(data, msg => {
       if (data.smallbtn) event.smallbtn = true
-      return data.bot.sdk.sendPrivateMessage(data.user_id, msg, event, { stream: data.stream || false })
+      return data.bot.sdk.sendPrivateMessage(data.user_id, adaptSendableForSDK(msg), event, { stream: data.stream || false })
     }, msg)
   }
 
@@ -1074,7 +1090,7 @@ const adapter = new class QQBotAdapter {
     }
     return this.sendMsg(data, msg => {
       if (data.smallbtn) event.smallbtn = true
-      return data.bot.sdk.sendGroupMessage(data.group_id, msg, event, { stream: data.stream || false })
+      return data.bot.sdk.sendGroupMessage(data.group_id, adaptSendableForSDK(msg), event, { stream: data.stream || false })
     }, msg)
   }
 
@@ -1652,7 +1668,7 @@ const adapter = new class QQBotAdapter {
         ...dms
       })
     }
-    return this.sendGMsg(data, msg => data.bot.sdk.sendDirectMessage(data.guild_id, msg, event), msg)
+    return this.sendGMsg(data, msg => data.bot.sdk.sendDirectMessage(data.guild_id, adaptSendableForSDK(msg), event), msg)
   }
 
   async recallMsg(data, recall, message_id) {
@@ -1706,7 +1722,7 @@ const adapter = new class QQBotAdapter {
   }
 
   sendGuildMsg(data, msg, event) {
-    return this.sendGMsg(data, msg => data.bot.sdk.sendGuildMessage(data.channel_id, msg, event), msg)
+    return this.sendGMsg(data, msg => data.bot.sdk.sendGuildMessage(data.channel_id, adaptSendableForSDK(msg), event), msg)
   }
 
   pickFriend(id, user_id) {
@@ -1960,7 +1976,7 @@ const adapter = new class QQBotAdapter {
         .filter(Boolean)
       : []
     const rawMessage = event.raw_message || event.content || ''
-    let message = event.message || []
+    let message = flattenReceivedMessage(event.message || [])
     let raw_message = rawMessage
     if (selfBotMentionIds.length) {
       const mentionReg = new RegExp(selfBotMentionIds.map(i => `<@${_.escapeRegExp(i)}>`).join('|'), 'g')
@@ -2133,7 +2149,7 @@ const adapter = new class QQBotAdapter {
                 msg = i
               }
               if (msg?.length > 0) {
-                this.sendMsg(data, msg => data.bot.sdk.sendGroupMessage(event.group_id, msg), msg)
+                this.sendMsg(data, msg => data.bot.sdk.sendGroupMessage(event.group_id, adaptSendableForSDK(msg)), msg)
               }
             })
           }
@@ -2191,7 +2207,7 @@ const adapter = new class QQBotAdapter {
       mode: 'websocket'
     }
 
-    if (Number(token[4])) opts.intents.push('GROUP_AT_MESSAGE_CREATE', 'GROUP_MESSAGE_CREATE', 'C2C_MESSAGE_CREATE')
+    if (Number(token[4])) opts.intents.push('GROUP_AND_C2C_EVENT')
 
     if (Number(token[5])) opts.intents.push('GUILD_MESSAGES')
     else opts.intents.push('PUBLIC_GUILD_MESSAGES')
@@ -2200,16 +2216,10 @@ const adapter = new class QQBotAdapter {
       adapter: this,
       sdk: new QQBot(opts),
       login() {
-        return new Promise(resolve => {
-          this.sdk.sessionManager.once('READY', resolve)
-          this.sdk.start()
-        })
+        return this.sdk.start()
       },
       logout() {
-        return new Promise(resolve => {
-          this.sdk.ws.once('close', resolve)
-          this.sdk.stop()
-        })
+        return Promise.resolve(this.sdk.stop())
       },
 
       uin: id,
