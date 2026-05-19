@@ -22,21 +22,6 @@ const QQBot = await (async () => {
   for (const pkg of ['qq-official-bot', 'qq-group-bot']) {
     try {
       const { Bot } = await import(pkg)
-      try {
-        const { Message } = await import(`${pkg}/lib/message/parser.js`)
-        if (Message?.parse && !Message.parse.__qqbotMentionsPatched) {
-          const _origParse = Message.parse
-          Message.parse = function (payload) {
-            const savedMentions = payload?.mentions
-            const ret = _origParse.call(this, payload)
-            if (savedMentions !== undefined) payload.mentions = savedMentions
-            return ret
-          }
-          Message.parse.__qqbotMentionsPatched = true
-        }
-      } catch (e) {
-        logger.warn(`[QQBot] mentions 字段还原 patch 失败: ${e?.message || e}`)
-      }
       return Bot
     } catch (e) {}
   }
