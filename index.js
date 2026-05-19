@@ -51,6 +51,17 @@ function flattenReceivedMessage(msg) {
 const startTime = new Date()
 logger.info(logger.yellow('- 正在加载 QQBot 适配器插件'))
 
+const _sdkVersion = await (async () => {
+  for (const pkg of ['qq-official-bot', 'qq-group-bot']) {
+    try {
+      const { createRequire } = await import('node:module')
+      const require = createRequire(import.meta.url)
+      const { version } = require(`${pkg}/package.json`)
+      return `${pkg} v${version}`
+    } catch (e) {}
+  }
+  return 'QQBot'
+})()
 const userIdCache = {}
 const markdown_template = await importJS('Model/template/markdownTemplate.js', 'default')
 const TmplPkg = await importJS('templates/index.js')
@@ -60,7 +71,7 @@ const adapter = new class QQBotAdapter {
     this.id = 'QQBot'
     this.name = 'QQBot'
     this.path = 'data/QQBot/'
-    this.version = 'qq-group-bot v11.45.14'
+    this.version = _sdkVersion
 
     if (typeof config.toQRCode == 'boolean') {
       this.toQRCodeRegExp = config.toQRCode ? /(?<!\[(.*?)\]\()https?:\/\/[-\w_]+(\.[-\w_]+)+([-\w.,@?^=%&:/~+#]*[-\w@?^=%&/~+#])?/g : false
