@@ -14,16 +14,30 @@ TRSS-Yunzai QQBot 适配器 插件
 
 两个分支命令、配置、用法完全一样，只是底层依赖版本不同：
 
-| 使用上区别 | `main` 分支 | `sdk-1.1.2` 分支 |
+| 使用上区别 | `main` 分支 | `sdk-1.0.3` 分支 |
 | --- | --- | --- |
-| 底层依赖 | `qq-official-bot@1.0.3` | `qq-official-bot@1.1.2` |
-| 安装/更新依赖 | 跟着老版本走，不用动 | 第一次切过来要重新 `pnpm install` |
+| 底层依赖 | `qq-official-bot@1.1.2` | `qq-official-bot@1.0.3` |
+| 安装/更新依赖 | 第一次拉取后要 `pnpm install` | 跟着老版本走，不用动 |
 | 收/发普通消息 | 正常 | 正常 |
-| 收/发 Markdown / 按钮 | 已稳定使用 | 已适配，建议自己测一下 |
-| 文件、图片、语音上传 | 已稳定使用 | 已适配，建议自己测一下 |
+| 收/发 Markdown / 按钮 | 已适配 | 已稳定使用 |
+| 文件、图片、语音上传 | 已适配 | 已稳定使用 |
 
-> **没特殊需求就用 `main`**；**想跟官方新版同步、愿意一起测，再切 `sdk-1.1.2`**
-> 切换分支后需要执行一次 `pnpm install` 让依赖版本对上
+> **跟官方新版同步用 `main`**（推荐）；**云崽依赖锁死在 1.0.3 时再切 `sdk-1.0.3`**
+
+### 切换分支方法
+
+在 Yunzai 根目录下执行（以切到 `sdk-1.0.3` 为例）：
+
+```bash
+cd plugins/QQBot-Plugin
+git fetch origin
+git checkout sdk-1.0.3      # 切回主分支：git checkout main
+git pull
+cd ../..
+pnpm install                # 让依赖版本对上
+```
+
+> 切换分支后**必须**执行一次 `pnpm install`，否则底层 SDK 版本和适配器代码不一致会出问题
 
 ## 自用Fork版
 
