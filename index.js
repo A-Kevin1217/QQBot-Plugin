@@ -302,8 +302,10 @@ const adapter = new class QQBotAdapter {
       }
     }
 
-    Bot.makeLog('warn', ['图床上传失败，所有图床均不可用'], data.self_id)
-    return config.imgBed?.default || undefined
+    // 所有图床都失败：使用用户配置的默认图，没配则使用内置占位图
+    const fallbackUrl = config.imgBed?.default || 'https://placehold.co/512x512/png?text=Image+Unavailable'
+    Bot.makeLog('warn', [`图床上传失败，所有图床均不可用，使用默认图：${fallbackUrl}`], data.self_id)
+    return fallbackUrl
   }
 
   async makeMarkdownImage(data, file, summary = '图片') {
