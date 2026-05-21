@@ -48,6 +48,10 @@ function flattenReceivedMessage(msg) {
   })
 }
 
+function disableAxiosEnvProxy(request) {
+  if (request?.defaults) request.defaults.proxy = false
+}
+
 const startTime = new Date()
 logger.info(logger.yellow('- 正在加载 QQBot 适配器插件'))
 
@@ -2230,9 +2234,12 @@ const adapter = new class QQBotAdapter {
     if (Number(token[5])) opts.intents.push('GUILD_MESSAGES')
     else opts.intents.push('PUBLIC_GUILD_MESSAGES')
 
+    const sdk = new QQBot(opts)
+    disableAxiosEnvProxy(sdk.request)
+
     Bot[id] = {
       adapter: this,
-      sdk: new QQBot(opts),
+      sdk,
       login() {
         return this.sdk.start()
       },
