@@ -549,6 +549,8 @@ const adapter = new class QQBotAdapter {
           break
         case 'stream':
           data.stream = true
+          data.chunkSize = i.data?.chunkSize ?? config.chunkSize
+          data.delay = i.data?.delay ?? config.delay
           break
         case 'small':
           data.smallbtn = true
@@ -1065,13 +1067,13 @@ const adapter = new class QQBotAdapter {
     if (data.smallbtn) event.smallbtn = true
     return this.sendMsg(data, msg => {
       if (data.smallbtn) event.smallbtn = true
-      return data.bot.sdk.sendPrivateMessage(data.user_id, adaptSendableForSDK(msg), event, { stream: data.stream || false })
+      return data.bot.sdk.sendPrivateMessage(data.user_id, adaptSendableForSDK(msg), event, { stream: data.stream || false, chunkSize: data.chunkSize, delay: data.delay })
     }, msg)
   }
 
   async sendGroupMsg(data, msg, event) {
     if (!event) event = {}
-    if (data.smallbtn) this.applySmallBtn(msg)
+    if (data.smallbtn) event.smallbtn = true
 
     if (Handler.has('QQBot.group.sendMsg')) {
       const res = await Handler.call(
@@ -1092,7 +1094,7 @@ const adapter = new class QQBotAdapter {
     }
     return this.sendMsg(data, msg => {
       if (data.smallbtn) event.smallbtn = true
-      return data.bot.sdk.sendGroupMessage(data.group_id, adaptSendableForSDK(msg), event, { stream: data.stream || false })
+      return data.bot.sdk.sendGroupMessage(data.group_id, adaptSendableForSDK(msg), event, { stream: data.stream || false, chunkSize: data.chunkSize, delay: data.delay })
     }, msg)
   }
 
@@ -2246,6 +2248,63 @@ const adapter = new class QQBotAdapter {
     disableAxiosEnvProxy(sdk.request)
 
     {
+      const StreamInputMode = { REPLACE: 'replace' }
+      const StreamInputState = { GENERATING: 1, DONE: 10 }
+      const StreamContentType = { MARKDOWN: 'markdown' }
+
+      function extractText(message) {
+        if (typeof message === 'string') return message
+        if (Array.isArray(message)) {
+          return message.map(item => {
+            if (item.type === 'markdown') return item.content || ''
+            if (item.type === 'text') return item.text || ''
+            return ''
+          }).join('')
+        }
+        return ''
+      }
+
+      async function sendStreamMessage(sdk, endpointPath, message, source, options) {
+        let content = extractText(message)
+        if (!content || typeof content !== 'string') throw new Error('流式消息内容必须是字符串')
+        const chunkSize = options.chunkSize || Math.ceil(content.length / 2)
+        const delay = options.delay || 100
+        let streamMsgId = null
+        let index = 0
+        let currentContent = ''
+        for (let i = 0; i < content.length; i += chunkSize) {
+          const chunk = content.substring(i, i + chunkSize)
+          currentContent += chunk
+          const req = {
+            input_mode: StreamInputMode.REPLACE,
+            input_state: i + chunkSize >= content.length ? StreamInputState.DONE : StreamInputState.GENERATING,
+            content_type: StreamContentType.MARKDOWN,
+            content_raw: currentContent,
+            event_id: source?.event_id || `event_${Date.now()}`,
+            msg_id: source?.id || `msg_${Date.now()}`,
+            index: index++
+          }
+          if (streamMsgId) req.stream_msg_id = streamMsgId
+          const response = await sdk.request.post(`${endpointPath}/stream_messages`, req)
+          if (!streamMsgId && response.data?.id) streamMsgId = response.data.id
+          if (i + chunkSize < content.length) await new Promise(r => setTimeout(r, delay))
+        }
+        return { id: streamMsgId, content: currentContent }
+      }
+
+      {
+        const origPrivate = sdk.sendPrivateMessage?.bind(sdk)
+        if (origPrivate) {
+          sdk.sendPrivateMessage = async function (user_id, message, source = {}, options = {}) {
+            if (options.stream) {
+              try { return await sendStreamMessage(sdk, `/v2/users/${user_id}`, message, source, options) }
+              catch (e) { logger.error(`流式发送失败，转为普通消息: ${e.message}`) }
+            }
+            return origPrivate(user_id, message, source, options)
+          }
+        }
+      }
+
       const origSend = sdk.messageService.sendMessage.bind(sdk.messageService)
       sdk.messageService.sendMessage = async function (endpointPath, message, source, options) {
         const origRegular = this.sendRegularMessage.bind(this)
