@@ -2326,6 +2326,23 @@ const adapter = new class QQBotAdapter {
         try { return await origSend(endpointPath, message, source, options) }
         finally { this.sendRegularMessage = origRegular }
       }
+
+      const { createRequire } = await import('node:module')
+      const _require = createRequire(import.meta.url)
+      const { MessageBuilder } = _require('qq-official-bot/lib/message/builder.js')
+      sdk.messageService.sendRecallMessage = async function (endpointPath, message, source) {
+        const messageBuilder = new MessageBuilder(this.appid, !endpointPath.startsWith('/v2'), source)
+        const buildResult = await messageBuilder.build(message)
+        if (buildResult.messagePayload) {
+          delete buildResult.messagePayload.msg_id
+          delete buildResult.messagePayload.event_id
+          buildResult.messagePayload.is_wakeup = true
+        }
+        if (buildResult.isFile) {
+          buildResult.messagePayload.media = await this.uploadFile(endpointPath, buildResult)
+        }
+        return await this.sendRegularMessage(endpointPath, buildResult)
+      }
     }
 
     Bot[id] = {
