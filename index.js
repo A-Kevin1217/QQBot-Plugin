@@ -1065,6 +1065,7 @@ const adapter = new class QQBotAdapter {
   sendFriendMsg(data, msg, event) {
     if (!event) event = {}
     if (data.smallbtn) event.smallbtn = true
+    if (data.stream === undefined) data.stream = config.stream
     return this.sendMsg(data, msg => {
       if (data.smallbtn) event.smallbtn = true
       return data.bot.sdk.sendPrivateMessage(data.user_id, adaptSendableForSDK(msg), event, { stream: data.stream || false, chunkSize: data.chunkSize, delay: data.delay })
