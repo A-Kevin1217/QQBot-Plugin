@@ -28,6 +28,24 @@ const QQBot = await (async () => {
   }
 })()
 
+try {
+  const { Sender } = await import('qq-official-bot/lib/entries/sender.js')
+  const origProcessMessage = Sender.prototype.processMessage
+  Sender.prototype.processMessage = async function () {
+    await origProcessMessage.call(this)
+    const smallbtn = this.smallbtn || this.source?.smallbtn
+    if (smallbtn && this.messagePayload?.keyboard) {
+      if (!this.messagePayload.keyboard.content) this.messagePayload.keyboard.content = {}
+      this.messagePayload.keyboard.content.style = { font_size: 'small' }
+    }
+  }
+  const origConstructor = Sender.prototype.constructor
+  Sender.prototype.constructor = function (bot, baseUrl, message, source = {}) {
+    this.smallbtn = source?.smallbtn
+    origConstructor.call(this, bot, baseUrl, message, source)
+  }
+} catch {}
+
 function adaptSendableForSDK(msg) {
   if (msg == null) return msg
   if (typeof msg === 'string') return msg
@@ -446,11 +464,12 @@ const adapter = new class QQBotAdapter {
       }
     } else return false
 
-    if (button.modal) {
+    if (button.modal || button.content || button.confirm_text || button.cancel_text) {
+      const modal = button.modal || button
       msg.action.modal = {
-        content: button.modal.content || '确认执行？',
-        confirm_text: button.modal.confirm_text || '确认',
-        cancel_text: button.modal.cancel_text || '取消',
+        content: modal.content || '是否确认操作?',
+        confirm_text: modal.confirm_text || '是',
+        cancel_text: modal.cancel_text || '否'
       }
     }
 
@@ -1059,21 +1078,11 @@ const adapter = new class QQBotAdapter {
     return rets
   }
 
-  applySmallBtn(msg) {
-    const arr = Array.isArray(msg) ? msg : [msg]
-    for (const i of arr) {
-      if (i?.type === 'keyboard' && i.content) {
-        i.content.style = { font_size: 'small' }
-      }
-    }
-    return msg
-  }
-
   sendFriendMsg(data, msg, event) {
     if (!event) event = {}
-    if (data.smallbtn) this.applySmallBtn(msg)
+    if (data.smallbtn) event.smallbtn = true
     return this.sendMsg(data, msg => {
-      if (data.smallbtn) this.applySmallBtn(msg)
+      if (data.smallbtn) event.smallbtn = true
       return data.bot.sdk.sendPrivateMessage(data.user_id, adaptSendableForSDK(msg), event, { stream: data.stream || false })
     }, msg)
   }
@@ -1100,7 +1109,7 @@ const adapter = new class QQBotAdapter {
       }
     }
     return this.sendMsg(data, msg => {
-      if (data.smallbtn) { event.smallbtn = true; this.applySmallBtn(msg) }
+      if (data.smallbtn) event.smallbtn = true
       return data.bot.sdk.sendGroupMessage(data.group_id, adaptSendableForSDK(msg), event, { stream: data.stream || false })
     }, msg)
   }
