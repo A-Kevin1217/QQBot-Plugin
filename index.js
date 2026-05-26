@@ -28,24 +28,6 @@ const QQBot = await (async () => {
   }
 })()
 
-try {
-  const { Sender } = await import('qq-official-bot/lib/entries/sender.js')
-  const origProcessMessage = Sender.prototype.processMessage
-  Sender.prototype.processMessage = async function () {
-    await origProcessMessage.call(this)
-    const smallbtn = this.smallbtn || this.source?.smallbtn
-    if (smallbtn && this.messagePayload?.keyboard) {
-      if (!this.messagePayload.keyboard.content) this.messagePayload.keyboard.content = {}
-      this.messagePayload.keyboard.content.style = { font_size: 'small' }
-    }
-  }
-  const origConstructor = Sender.prototype.constructor
-  Sender.prototype.constructor = function (bot, baseUrl, message, source = {}) {
-    this.smallbtn = source?.smallbtn
-    origConstructor.call(this, bot, baseUrl, message, source)
-  }
-} catch {}
-
 function adaptSendableForSDK(msg) {
   if (msg == null) return msg
   if (typeof msg === 'string') return msg
@@ -2262,6 +2244,21 @@ const adapter = new class QQBotAdapter {
 
     const sdk = new QQBot(opts)
     disableAxiosEnvProxy(sdk.request)
+
+    {
+      const origSend = sdk.messageService.sendMessage.bind(sdk.messageService)
+      sdk.messageService.sendMessage = async function (endpointPath, message, source, options) {
+        const origRegular = this.sendRegularMessage.bind(this)
+        this.sendRegularMessage = async function (ep, buildResult, opts) {
+          if (source?.smallbtn && buildResult.messagePayload?.keyboard?.content) {
+            buildResult.messagePayload.keyboard.content.style = { font_size: 'small' }
+          }
+          return origRegular(ep, buildResult, opts)
+        }
+        try { return await origSend(endpointPath, message, source, options) }
+        finally { this.sendRegularMessage = origRegular }
+      }
+    }
 
     Bot[id] = {
       adapter: this,
