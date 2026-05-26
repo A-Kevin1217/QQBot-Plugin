@@ -186,7 +186,7 @@ export default class Dau {
       data = this.monthlyDau(Object.values(data).flat().slice(-30))
 
       totalDAU.days = days
-      const arr = _.entries(this.call_stats).sort((a, b) => b[1] - a[1])
+      const arr = Object.entries(this.call_stats).sort((a, b) => b[1] - a[1])
       let renderdata = {
         ...await this.callStat(arr, true),
         daus: JSON.stringify(data),
@@ -213,7 +213,7 @@ export default class Dau {
   }
 
   getCallStatsMsg (e) {
-    const arr = _.entries(this.call_stats).sort((a, b) => b[1] - a[1])
+    const arr = Object.entries(this.call_stats).sort((a, b) => b[1] - a[1])
     const msg = [this.today, '数据可能不准确,请自行识别']
     for (let i = 0; i < 10; i++) {
       if (!arr[i]) break

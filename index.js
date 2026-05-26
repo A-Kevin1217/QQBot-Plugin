@@ -17,6 +17,7 @@ import {
   splitMarkDownTemplate,
   getMustacheTemplating
 } from './Model/index.js'
+import { qrRegister, generateQRCode, BindStatus } from './Model/qr-auth.js'
 
 const QQBot = await (async () => {
   for (const pkg of ['qq-official-bot', 'qq-group-bot']) {
@@ -319,7 +320,7 @@ const adapter = new class QQBotAdapter {
     }
 
     Bot.makeLog('warn', ['图床上传失败，所有图床均不可用'], data.self_id)
-    return config.imgBed?.default || undefined
+    return config.imgBed?.default ?? undefined
   }
 
   async makeMarkdownImage(data, file, summary = '图片') {
@@ -1058,18 +1059,28 @@ const adapter = new class QQBotAdapter {
     return rets
   }
 
+  applySmallBtn(msg) {
+    const arr = Array.isArray(msg) ? msg : [msg]
+    for (const i of arr) {
+      if (i?.type === 'keyboard' && i.content) {
+        i.content.style = { font_size: 'small' }
+      }
+    }
+    return msg
+  }
+
   sendFriendMsg(data, msg, event) {
     if (!event) event = {}
-    if (data.smallbtn) event.smallbtn = true
+    if (data.smallbtn) this.applySmallBtn(msg)
     return this.sendMsg(data, msg => {
-      if (data.smallbtn) event.smallbtn = true
+      if (data.smallbtn) this.applySmallBtn(msg)
       return data.bot.sdk.sendPrivateMessage(data.user_id, adaptSendableForSDK(msg), event, { stream: data.stream || false })
     }, msg)
   }
 
   async sendGroupMsg(data, msg, event) {
     if (!event) event = {}
-    if (data.smallbtn) event.smallbtn = true
+    if (data.smallbtn) this.applySmallBtn(msg)
 
     if (Handler.has('QQBot.group.sendMsg')) {
       const res = await Handler.call(
@@ -1089,7 +1100,7 @@ const adapter = new class QQBotAdapter {
       }
     }
     return this.sendMsg(data, msg => {
-      if (data.smallbtn) event.smallbtn = true
+      if (data.smallbtn) { event.smallbtn = true; this.applySmallBtn(msg) }
       return data.bot.sdk.sendGroupMessage(data.group_id, adaptSendableForSDK(msg), event, { stream: data.stream || false })
     }, msg)
   }
@@ -1833,7 +1844,10 @@ const adapter = new class QQBotAdapter {
 
   async makeFriendMessage(data, event) {
     data.sender = {
-      user_id: `${data.self_id}${this.sep}${event.sender.user_id}`
+      user_id: `${data.self_id}${this.sep}${event.sender.user_id}`,
+      raw_user_id: event.sender.user_id,
+      nickname: event.sender.user_name,
+      avatar: `https://q.qlogo.cn/qqapp/${data.bot.info.appid}/${event.sender.user_id}/0`
     }
     Bot.makeLog('info', `好友消息：[${data.user_id}] ${data.raw_message}`, data.self_id)
     data.sendInputNotify = input_second => this.sendInputNotify(data, input_second)
@@ -1845,7 +1859,10 @@ const adapter = new class QQBotAdapter {
 
   async makeGroupMessage(data, event) {
     data.sender = {
-      user_id: `${data.self_id}${this.sep}${event.sender.user_id}`
+      user_id: `${data.self_id}${this.sep}${event.sender.user_id}`,
+      raw_user_id: event.sender.user_id,
+      nickname: event.sender.user_name,
+      avatar: `https://q.qlogo.cn/qqapp/${data.bot.info.appid}/${event.sender.user_id}/0`
     }
     data.group_id = `${data.self_id}${this.sep}${event.group_id}`
     if (config.toQQUin && Handler.has('ws.tool.findUserId')) {
@@ -2392,6 +2409,11 @@ export class QQBotAdapter extends plugin {
           permission: config.permission
         },
         {
+          reg: /^#[Qq]+[Bb]ot登录[0-9]+:([01]:[01]|2)$/i,
+          fnc: 'QRLogin',
+          permission: config.permission
+        },
+        {
           reg: /^#q+botm(ark)?d(own)?[0-9]+:/i,
           fnc: 'Markdown',
           permission: config.permission
@@ -2483,6 +2505,92 @@ export class QQBotAdapter extends plugin {
       }
     }
     await configSave()
+  }
+
+  async QRLogin() {
+    const match = /^#[Qq]+[Bb]ot登录([0-9]+):([01]):([01])$/i.exec(this.e.msg)
+    const matchWebhook = /^#[Qq]+[Bb]ot登录([0-9]+):2$/i.exec(this.e.msg)
+
+    let qqId, param1, param2, isWebhook = false
+
+    if (match) {
+      qqId = match[1]
+      param1 = match[2]
+      param2 = match[3]
+    } else if (matchWebhook) {
+      qqId = matchWebhook[1]
+      param1 = '2'
+      param2 = '0'
+      isWebhook = true
+    } else {
+      return this.reply('指令格式错误\n普通模式: #QQBot登录QQ号:参数1:参数2\nWebhook模式: #QQBot登录QQ号:2', true)
+    }
+
+    await this.reply(`正在为 QQ ${qqId} 生成扫码登录二维码 (${isWebhook ? 'Webhook模式' : '普通模式'})，请稍候...`, true)
+
+    const tempDir = join(process.cwd(), 'temp')
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true })
+    }
+
+    try {
+      const result = await qrRegister({
+        timeoutSeconds: 300,
+        onQRCode: async (imageBuffer, url) => {
+          const qrFile = join(tempDir, `qqbot_qr_${Date.now()}.gif`)
+          fs.writeFileSync(qrFile, imageBuffer)
+
+          logger.info(`[QQBot] 二维码已保存到: ${qrFile}`)
+          logger.info(`[QQBot] 二维码链接: ${url}`)
+
+          await this.reply([
+            segment.image(imageBuffer),
+            `\n请使用手机 QQ 扫描二维码登录\n或打开链接: ${url}\n\n二维码图片已保存到: ${qrFile}`
+          ])
+        },
+        onStatusChange: async (status, message) => {
+          if (status === BindStatus.COMPLETED) {
+            logger.info(`[QQBot] 扫码成功: ${message}`)
+          } else if (status === BindStatus.EXPIRED) {
+            logger.info(`[QQBot] 二维码过期: ${message}`)
+            await this.reply(`二维码状态: ${message}`)
+          } else if (status === BindStatus.PENDING) {
+            logger.info(`[QQBot] 等待扫码: ${message}`)
+          } else {
+            logger.info(`[QQBot] 状态: ${message}`)
+          }
+        }
+      })
+
+      if (!result) {
+        return await this.reply('扫码登录失败或超时', true)
+      }
+
+      const { appId, clientSecret, userOpenid } = result
+
+      logger.info(`[QQBot] 扫码成功!`)
+      logger.info(`[QQBot] AppID: ${appId}`)
+      logger.info(`[QQBot] UserOpenID: ${userOpenid}`)
+
+      const token = `${qqId}:${appId}:QQBot:${clientSecret}:${param1}:${param2}`
+
+      const existingIndex = config.token.findIndex(t => t.startsWith(`${qqId}:`))
+
+      if (await adapter.connect(token)) {
+        if (existingIndex >= 0) {
+          config.token[existingIndex] = token
+        } else {
+          config.token.push(token)
+        }
+        await configSave()
+        await this.reply(`扫码登录成功！\nQQ号: ${qqId}\nAppID: ${appId}\n账号已保存并连接`, true)
+      } else {
+        await this.reply(`扫码登录成功，但连接失败\nQQ号: ${qqId}\nAppID: ${appId}\n请检查机器人配置`, true)
+      }
+    } catch (err) {
+      console.error('[QQBot] 扫码登录错误:', err)
+      await this.reply(`扫码登录出错: ${err.message}`, true)
+    }
   }
 
   async Markdown() {
