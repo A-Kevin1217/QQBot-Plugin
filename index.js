@@ -2256,8 +2256,10 @@ const adapter = new class QQBotAdapter {
         if (typeof message === 'string') return message
         if (Array.isArray(message)) {
           return message.map(item => {
-            if (item.type === 'markdown') return item.content || ''
-            if (item.type === 'text') return item.text || ''
+            if (!item || typeof item !== 'object') return ''
+            const d = item.data
+            if (item.type === 'markdown') return (d?.content ?? item.content) || ''
+            if (item.type === 'text') return (d?.text ?? item.text) || ''
             return ''
           }).join('')
         }
@@ -2297,8 +2299,14 @@ const adapter = new class QQBotAdapter {
         if (origPrivate) {
           sdk.sendPrivateMessage = async function (user_id, message, source = {}, options = {}) {
             if (options.stream) {
-              try { return await sendStreamMessage(sdk, `/v2/users/${user_id}`, message, source, options) }
-              catch (e) { logger.error(`流式发送失败，转为普通消息: ${e.message}`) }
+              const text = extractText(message)
+              logger.info(`[QQBot] 流式消息: stream=${options.stream}, 文本长度=${text.length}`)
+              if (text) {
+                try { return await sendStreamMessage(sdk, `/v2/users/${user_id}`, message, source, options) }
+                catch (e) { logger.error(`流式发送失败，转为普通消息: ${e.message}`) }
+              } else {
+                logger.warn('[QQBot] 流式消息提取文本为空，转为普通消息', JSON.stringify(message).slice(0, 200))
+              }
             }
             return origPrivate(user_id, message, source, options)
           }
