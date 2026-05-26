@@ -22,7 +22,7 @@ let { config, configSave } = await makeConfig('QQBot', {
   filter_bot_msg: true,
   simplifiedSdkLog: false,
   markdownImgScale: 1.0,
-  stream: true,
+  stream: false,
   smallbtn: false,
   sep: '',
   dauDB: 'redis',
