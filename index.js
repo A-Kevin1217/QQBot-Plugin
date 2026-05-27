@@ -2325,7 +2325,7 @@ const adapter = new class QQBotAdapter {
             return await origRegular(ep, buildResult, opts)
           } catch (e) {
             if (buildResult.messagePayload && e.message?.includes('code(22007)')) {
-              logger.warn(`[QQBot] 回复消息超限 (22007)，移除 msg_id/event_id 后重试`)
+              logger.warn(`单条消息回复已超限，正在尝试通过主动消息发送`)
               delete buildResult.messagePayload.msg_id
               delete buildResult.messagePayload.event_id
               return await origRegular(ep, buildResult, opts)
