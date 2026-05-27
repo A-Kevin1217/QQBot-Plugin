@@ -2321,7 +2321,17 @@ const adapter = new class QQBotAdapter {
           if (source?.smallbtn && buildResult.messagePayload?.keyboard?.content) {
             buildResult.messagePayload.keyboard.content.style = { font_size: 'small' }
           }
-          return origRegular(ep, buildResult, opts)
+          try {
+            return await origRegular(ep, buildResult, opts)
+          } catch (e) {
+            if (buildResult.messagePayload && e.message?.includes('code(22007)')) {
+              logger.warn(`[QQBot] 回复消息超限 (22007)，移除 msg_id/event_id 后重试`)
+              delete buildResult.messagePayload.msg_id
+              delete buildResult.messagePayload.event_id
+              return await origRegular(ep, buildResult, opts)
+            }
+            throw e
+          }
         }
         try { return await origSend(endpointPath, message, source, options) }
         finally { this.sendRegularMessage = origRegular }
