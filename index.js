@@ -329,12 +329,12 @@ const adapter = new class QQBotAdapter {
       await this.makeBotImage(buffer) ||
       { url: await Bot.fileToUrl(file) }
 
-    if (!image.width || !image.height) {
-      try {
-        const size = imageSize(buffer)
-        image.width = size.width
-        image.height = size.height
-      } catch (err) {
+    try {
+      const size = imageSize(buffer)
+      image.width = size.width
+      image.height = size.height
+    } catch (err) {
+      if (!image.width || !image.height) {
         Bot.makeLog('error', ['图片分辨率检测错误', file, err], data.self_id)
       }
     }
