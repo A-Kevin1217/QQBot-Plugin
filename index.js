@@ -984,6 +984,8 @@ const adapter = new class QQBotAdapter {
   }
 
   async sendMsg(data, send, msg) {
+    await this._preSendMsg?.(data, send, msg)
+
     const rets = { message_id: [], data: [], error: [] }
     let msgs
 
@@ -1036,7 +1038,8 @@ const adapter = new class QQBotAdapter {
     if (data.toQQBotMD !== false) {
       const mdConfig = config.markdown[data.self_id]
       if (mdConfig && mdConfig !== 'raw') msgs = await this.makeMarkdownMsg(data, msg)
-      else msgs = await this.makeRawMarkdownMsg(data, msg)
+      else if (!mdConfig || mdConfig === 'raw') msgs = await this.makeRawMarkdownMsg(data, msg)
+      else msgs = await this.makeMsg(data, msg)
 
       const [mds, btns] = _.partition(msgs[0], v => v.type === 'markdown')
       if (mds.length > 1) {
@@ -1051,7 +1054,12 @@ const adapter = new class QQBotAdapter {
       msgs = await this.makeMsg(data, msg)
     }
 
-    await sendMsg()
+    if (await sendMsg() === false) {
+      if (this._onSendMsgFallback) {
+        msgs = await this._onSendMsgFallback(data, msg)
+        if (msgs) await sendMsg()
+      }
+    }
 
     if (data._files && data._files.length) {
       await this.sendFiles(data, data._files)
