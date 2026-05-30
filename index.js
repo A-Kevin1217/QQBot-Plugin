@@ -2463,7 +2463,7 @@ const adapter = new class QQBotAdapter {
     const appid = req.headers["x-bot-appid"]
     if (!(appid in this.appid))
       return Bot.makeLog("warn", "找不到对应Bot", appid)
-    if ("plain_token" in req.body?.d)
+    if (req.body?.d && "plain_token" in req.body.d)
       return this.makeWebHookSign(req, this.appid[appid].info.secret)
     if ("t" in req.body)
       this.appid[appid].sdk.dispatchEvent(req.body.t, req.body)
