@@ -1994,8 +1994,11 @@ const adapter = new class QQBotAdapter {
     if (config.filter_bot_msg) {
       // 发送方本身是机器人，直接丢弃
       if (event.author?.bot) return true
-      // 消息里 @ 了别的机器人（bot=true 且不是当前 Bot），丢弃
-      if (Array.isArray(event.mentions) && event.mentions.some(m => m?.bot === true && m?.is_you !== true) && !event.mentions.some(m => m?.is_you === true)) return true
+      // 消息里 @ 了别的机器人（bot=true 且不是当前 Bot），或 @ 了全体成员，丢弃
+      if (Array.isArray(event.mentions)) {
+        const isBotMentioned = event.mentions.some(m => m?.is_you === true && m?.scope !== "all")
+        if (!isBotMentioned && (event.mentions.some(m => m?.scope === "all") || event.mentions.some(m => m?.bot === true && m?.is_you !== true))) return true
+      }
     }
 
     const mentionAtIds = Array.isArray(event.mentions)
