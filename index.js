@@ -2030,7 +2030,8 @@ const adapter = new class QQBotAdapter {
     const mentions = Array.isArray(event.mentions) ? event.mentions : []
     let atUser = mentions.length ? [...mentions].reverse().find(m => !m.bot) : null
     if (!atUser && mentions.length) atUser = mentions.at(-1)
-    const atOpenid = atUser?.member_openid || atUser?.id || null
+    // 如果艾特的是自己机器人，则 at 字段置空
+    const atOpenid = atUser?.is_you ? null : (atUser?.member_openid || atUser?.id || null)
     const atStr = atOpenid ? `${id}:${atOpenid}` : null
 
     const data = {
