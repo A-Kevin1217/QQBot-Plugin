@@ -1998,9 +1998,9 @@ const adapter = new class QQBotAdapter {
         .filter(Boolean)
       : []
 
-    // 艾特了自己机器人时，提前过滤原始消息中的首个艾特
+    // 艾特了自己机器人时，删除所有出现的自己的艾特
     if (selfBotMentionIds.length) {
-      const mentionReg = new RegExp(selfBotMentionIds.map(i => `<@${_.escapeRegExp(i)}>`).join('|'))
+      const mentionReg = new RegExp(selfBotMentionIds.map(i => `<@${_.escapeRegExp(i)}>`).join('|'), 'g')
       if (event.raw_message) {
         event.raw_message = event.raw_message.replace(mentionReg, '').replace(/[ \t]{2,}/g, ' ').trim()
       }
@@ -2026,13 +2026,11 @@ const adapter = new class QQBotAdapter {
     let message = flattenReceivedMessage(event.message || [])
     let raw_message = rawMessage
 
-    // 计算 at 相关字段：参考 ts-yf 实现，优先取最后一个非 bot 的 mention
+    // 计算 at 相关字段：收集所有非自己的 mention
     const mentions = Array.isArray(event.mentions) ? event.mentions : []
-    let atUser = mentions.length ? [...mentions].reverse().find(m => !m.bot) : null
-    if (!atUser && mentions.length) atUser = mentions.at(-1)
-    // 如果艾特的是自己机器人，则 at 字段置空
-    const atOpenid = atUser?.is_you ? null : (atUser?.member_openid || atUser?.id || null)
-    const atStr = atOpenid ? `${id}:${atOpenid}` : null
+    const atUsers = mentions.filter(m => m?.is_you !== true)
+    const atStrs = atUsers.map(m => `${id}:${m.member_openid || m.id}`).filter(Boolean)
+    const atStr = atStrs.length ? atStrs[0] : null
 
     const data = {
       raw: event,
