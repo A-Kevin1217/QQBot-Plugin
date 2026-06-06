@@ -1998,10 +1998,15 @@ const adapter = new class QQBotAdapter {
         .filter(Boolean)
       : []
 
-    // 艾特了自己机器人时，提前过滤 content 中的首个艾特
-    if (selfBotMentionIds.length && event.content) {
+    // 艾特了自己机器人时，提前过滤原始消息中的首个艾特
+    if (selfBotMentionIds.length) {
       const mentionReg = new RegExp(selfBotMentionIds.map(i => `<@${_.escapeRegExp(i)}>`).join('|'))
-      event.content = event.content.replace(mentionReg, '').replace(/[ \t]{2,}/g, ' ').trim()
+      if (event.raw_message) {
+        event.raw_message = event.raw_message.replace(mentionReg, '').replace(/[ \t]{2,}/g, ' ').trim()
+      }
+      if (event.content) {
+        event.content = event.content.replace(mentionReg, '').replace(/[ \t]{2,}/g, ' ').trim()
+      }
     }
 
     if (config.filter_bot_msg) {
