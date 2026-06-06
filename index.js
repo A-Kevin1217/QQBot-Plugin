@@ -1991,6 +1991,13 @@ const adapter = new class QQBotAdapter {
       return
     }
 
+    const selfBotMentionIds = Array.isArray(event.mentions)
+      ? event.mentions
+        .filter(m => m?.bot === true && m?.is_you === true)
+        .flatMap(m => [m.id, m.member_openid])
+        .filter(Boolean)
+      : []
+
     if (config.filter_bot_msg) {
       // 发送方本身是机器人，直接丢弃
       if (event.author?.bot) return true
@@ -1998,27 +2005,38 @@ const adapter = new class QQBotAdapter {
       if (Array.isArray(event.mentions)) {
         const isBotMentioned = event.mentions.some(m => m?.is_you === true && m?.scope !== "all")
         if (!isBotMentioned && (event.mentions.some(m => m?.scope === "all") || event.mentions.some(m => m?.bot === true && m?.is_you !== true))) return true
+        if (isBotMentioned && Array.isArray(event.message)) {
+          let removedSelfAt = false
+          event.message = event.message.filter(item => {
+            if (!removedSelfAt && item?.type === 'at' && selfBotMentionIds.includes(item.user_id)) {
+              removedSelfAt = true
+              return false
+            }
+            return true
+          })
+        }
       }
     }
 
     const mentionAtIds = Array.isArray(event.mentions)
       ? _.uniq(event.mentions.flatMap(m => [m.id, m.member_openid, m.user_id, m.openid]).filter(Boolean))
       : []
-    const selfBotMentionIds = Array.isArray(event.mentions)
-      ? event.mentions
-        .filter(m => m?.bot === true && m?.is_you === true)
-        .flatMap(m => [m.id, m.member_openid])
-        .filter(Boolean)
-      : []
     const rawMessage = event.raw_message || event.content || ''
     let message = flattenReceivedMessage(event.message || [])
     let raw_message = rawMessage
     if (selfBotMentionIds.length) {
-      const mentionReg = new RegExp(selfBotMentionIds.map(i => `<@${_.escapeRegExp(i)}>`).join('|'), 'g')
+      const mentionReg = new RegExp(selfBotMentionIds.map(i => `<@${_.escapeRegExp(i)}>`).join('|'))
       raw_message = raw_message.replace(mentionReg, '').replace(/[ \t]{2,}/g, ' ').trim()
       if (event.content) event.content = event.content.replace(mentionReg, '').replace(/[ \t]{2,}/g, ' ').trim()
+      let removedSelfAt = false
       message = message
-        .filter(i => !(i?.type === 'at' && selfBotMentionIds.includes(i.user_id)))
+        .filter(i => {
+          if (!removedSelfAt && i?.type === 'at' && selfBotMentionIds.includes(i.user_id)) {
+            removedSelfAt = true
+            return false
+          }
+          return true
+        })
         .map(i => i?.type === 'text' ? { ...i, text: String(i.text || '').replace(mentionReg, '').replace(/[ \t]{2,}/g, ' ').trim() } : i)
     }
 
