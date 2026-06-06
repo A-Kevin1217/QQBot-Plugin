@@ -2030,7 +2030,7 @@ const adapter = new class QQBotAdapter {
     const mentions = Array.isArray(event.mentions) ? event.mentions : []
     const atUsers = mentions.filter(m => m?.is_you !== true)
     const atStrs = atUsers.map(m => `${id}:${m.member_openid || m.id}`).filter(Boolean)
-    const atStr = atStrs.length ? atStrs.join(',') : null
+    const atStr = atStrs.length ? atStrs.join('\n') : null
     const atme = mentions.some(m => m?.is_you === true)
 
     const data = {
