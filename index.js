@@ -1998,6 +1998,12 @@ const adapter = new class QQBotAdapter {
         .filter(Boolean)
       : []
 
+    // 艾特了自己机器人时，提前过滤 content 中的首个艾特
+    if (selfBotMentionIds.length && event.content) {
+      const mentionReg = new RegExp(selfBotMentionIds.map(i => `<@${_.escapeRegExp(i)}>`).join('|'))
+      event.content = event.content.replace(mentionReg, '').replace(/[ \t]{2,}/g, ' ').trim()
+    }
+
     if (config.filter_bot_msg) {
       // 发送方本身是机器人，直接丢弃
       if (event.author?.bot) return true
@@ -2005,16 +2011,6 @@ const adapter = new class QQBotAdapter {
       if (Array.isArray(event.mentions)) {
         const isBotMentioned = event.mentions.some(m => m?.is_you === true && m?.scope !== "all")
         if (!isBotMentioned && (event.mentions.some(m => m?.scope === "all") || event.mentions.some(m => m?.bot === true && m?.is_you !== true))) return true
-        if (isBotMentioned && Array.isArray(event.message)) {
-          let removedSelfAt = false
-          event.message = event.message.filter(item => {
-            if (!removedSelfAt && item?.type === 'at' && selfBotMentionIds.includes(item.user_id)) {
-              removedSelfAt = true
-              return false
-            }
-            return true
-          })
-        }
       }
     }
 
@@ -2024,21 +2020,6 @@ const adapter = new class QQBotAdapter {
     const rawMessage = event.raw_message || event.content || ''
     let message = flattenReceivedMessage(event.message || [])
     let raw_message = rawMessage
-    if (selfBotMentionIds.length) {
-      const mentionReg = new RegExp(selfBotMentionIds.map(i => `<@${_.escapeRegExp(i)}>`).join('|'))
-      raw_message = raw_message.replace(mentionReg, '').replace(/[ \t]{2,}/g, ' ').trim()
-      if (event.content) event.content = event.content.replace(mentionReg, '').replace(/[ \t]{2,}/g, ' ').trim()
-      let removedSelfAt = false
-      message = message
-        .filter(i => {
-          if (!removedSelfAt && i?.type === 'at' && selfBotMentionIds.includes(i.user_id)) {
-            removedSelfAt = true
-            return false
-          }
-          return true
-        })
-        .map(i => i?.type === 'text' ? { ...i, text: String(i.text || '').replace(mentionReg, '').replace(/[ \t]{2,}/g, ' ').trim() } : i)
-    }
 
     // 计算 at 相关字段：参考 ts-yf 实现，优先取最后一个非 bot 的 mention
     const mentions = Array.isArray(event.mentions) ? event.mentions : []
