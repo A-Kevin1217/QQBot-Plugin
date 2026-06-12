@@ -16,7 +16,7 @@ TRSS-Yunzai QQBot 适配器 插件
 
 | 使用上区别 | `main` 分支 | `sdk-1.0.3` 分支 |
 | --- | --- | --- |
-| 底层依赖 | `qq-official-bot@1.1.2` | `qq-official-bot@1.0.3` |
+| 底层依赖 | `qq-official-bot@1.2.2` | `qq-official-bot@1.0.3` |
 | 安装/更新依赖 | 第一次拉取后要 `pnpm install` | 跟着老版本走，不用动 |
 | 收/发普通消息 | 正常 | 正常 |
 | 收/发 Markdown / 按钮 | 已适配 | 已稳定使用 |
@@ -107,11 +107,12 @@ pnpm install                # 让依赖版本对上
         # ...
     ```
 11. `config/QQBot.yaml`中`simplifiedSdkLog`是否简化sdk日志,若设置为`true`则不会打印` recv from Group(xxx):  xxx`,并且会简化发送为`send to Group(xxx): <markdown><button>`
-12. `#QQBot一键群发`: 需要先配置模版 `template/oneKeySendGroupMsg_default.js`
-13. `config/QQBot.yaml`中`markdownImgScale: 1`是否对markdown中的图片进行等比例缩放,0.5为缩小50%,1.5为放大50%,以此类推
-14. `config/QQBot.yaml`中`sendButton: true`未开启全局MD时是否单独发送按钮
-15. `config/QQBot.yaml`中`dauDB: level`选择存储dau数据的数据库,可选: `level`, `redis`,以及`false`关闭dau统计(仅每日发言用户和群)
-16. `config/QQBot.yaml`中`imgBed`图床配置,当Bot上传图片失败时自动使用图床上传,支持多个图床回退,Redis缓存默认10分钟
+12. `config/QQBot.yaml`中`autoInputNotify: false`是否自动显示输入状态(正在输入...),开启后收到消息时会自动显示输入状态30秒
+13. `#QQBot一键群发`: 需要先配置模版 `template/oneKeySendGroupMsg_default.js`
+14. `config/QQBot.yaml`中`markdownImgScale: 1`是否对markdown中的图片进行等比例缩放,0.5为缩小50%,1.5为放大50%,以此类推
+15. `config/QQBot.yaml`中`sendButton: true`未开启全局MD时是否单独发送按钮
+16. `config/QQBot.yaml`中`dauDB: level`选择存储dau数据的数据库,可选: `level`, `redis`,以及`false`关闭dau统计(仅每日发言用户和群)
+17. `config/QQBot.yaml`中`imgBed`图床配置,当Bot上传图片失败时自动使用图床上传,支持多个图床回退,Redis缓存默认10分钟
     ```yml
     imgBed:
       bilibili: '' # B站cookie,包含bili_jct和SESSDATA

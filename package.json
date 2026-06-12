@@ -4,7 +4,7 @@
   "author": "TimeRainStarSky",
   "dependencies": {
     "node-fetch": "^3.3.2",
-    "qq-official-bot": "1.2.0",
+    "qq-official-bot": "1.2.2",
     "qrcode": "^1.5.3",
     "silk-wasm": "^3.3.3",
     "tweetnacl": "^1.0.3"

@@ -21,6 +21,7 @@ let { config, configSave } = await makeConfig('QQBot', {
   filterLog: {},
   filter_bot_msg: true,
   simplifiedSdkLog: false,
+  autoInputNotify: false,
   markdownImgScale: 1.0,
   stream: false,
   smallbtn: false,

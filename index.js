@@ -1853,6 +1853,9 @@ const adapter = new class QQBotAdapter {
     }
     Bot.makeLog('info', `好友消息：[${data.user_id}] ${data.raw_message}`, data.self_id)
     data.sendInputNotify = input_second => this.sendInputNotify(data, input_second)
+    if (config.autoInputNotify) {
+      this.sendInputNotify(data, 30)
+    }
     data.reply = msg => this.sendFriendMsg({
       ...data, user_id: event.sender.user_id
     }, msg, { id: data.message_id })
@@ -1880,6 +1883,9 @@ const adapter = new class QQBotAdapter {
     let logStat = filterLog.includes(_.trim(data.raw_message)) ? 'debug' : 'info'
     Bot.makeLog(logStat, `群消息：[${data.group_id}, ${data.user_id}] ${data.raw_message}`, data.self_id)
     data.sendInputNotify = input_second => this.sendInputNotify(data, input_second)
+    if (config.autoInputNotify) {
+      this.sendInputNotify(data, 30)
+    }
     data.reply = msg => this.sendGroupMsg({
       ...data, group_id: event.group_id
     }, msg, { id: data.message_id })
