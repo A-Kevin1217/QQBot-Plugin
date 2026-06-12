@@ -2029,8 +2029,7 @@ const adapter = new class QQBotAdapter {
     // 计算 at 相关字段：收集所有非自己的 mention
     const mentions = Array.isArray(event.mentions) ? event.mentions : []
     const atUsers = mentions.filter(m => m?.is_you !== true)
-    const atStrs = atUsers.map(m => `${id}:${m.member_openid || m.id}`).filter(Boolean)
-    const atStr = atStrs.length ? atStrs.join('\n') : null
+    const atArray = atUsers.map(m => `${id}:${m.member_openid || m.id}`).filter(Boolean)
     const atme = mentions.some(m => m?.is_you === true)
 
     const data = {
@@ -2045,7 +2044,7 @@ const adapter = new class QQBotAdapter {
       message,
       raw_message,
       mentions,
-      at: atStr,
+      at: atArray,
       atall: mentions.some(m => m.scope === 'all'),
       atme
     }
