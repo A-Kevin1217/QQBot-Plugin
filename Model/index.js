@@ -4,6 +4,15 @@ import { getTime, importJS, splitMarkDownTemplate, getMustacheTemplating } from 
 import Runtime from '../../../lib/plugins/runtime.js'
 import Handler from '../../../lib/plugins/handler.js'
 import { config, configSave, refConfig } from './config.js'
+import { isCNBEnabled, uploadToCNB } from './cnb.js'
+import {
+  MAX_DAYS as IMG_BED_STATS_MAX_DAYS,
+  normalizeBed,
+  getBedName,
+  recordImageBedStat,
+  getImageBedStats,
+  formatImageBedStats
+} from './imgBedStats.js'
 
 export {
   Dau,
@@ -14,6 +23,14 @@ export {
   Handler,
   splitMarkDownTemplate,
   getMustacheTemplating,
+  isCNBEnabled,
+  uploadToCNB,
+  IMG_BED_STATS_MAX_DAYS,
+  normalizeBed,
+  getBedName,
+  recordImageBedStat,
+  getImageBedStats,
+  formatImageBedStats,
   config,
   configSave,
   refConfig

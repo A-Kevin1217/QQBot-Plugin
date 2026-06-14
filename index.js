@@ -14,6 +14,14 @@ import {
   config,
   configSave,
   refConfig,
+  isCNBEnabled,
+  uploadToCNB,
+  IMG_BED_STATS_MAX_DAYS,
+  normalizeBed,
+  getBedName,
+  recordImageBedStat,
+  getImageBedStats,
+  formatImageBedStats,
   splitMarkDownTemplate,
   getMustacheTemplating
 } from './Model/index.js'
@@ -305,19 +313,50 @@ const adapter = new class QQBotAdapter {
     }
 
     const beds = [
-      ['B站', () => this.uploadToBilibili(data, buffer)],
-      ['花瓣网', () => this.uploadToHuaban(data, buffer)],
-      ['COS', () => this.uploadToCOS(data, buffer)],
-      ['QQ频道', () => this.uploadToQQChannel(data, buffer)],
-      ['Telegraph', () => this.uploadToTelegraph(data, buffer)],
-      ['gitcode', () => this.uploadToGitcode(data, buffer)]
+      ['cnb', 'CNB', isCNBEnabled(config.imgBed?.cnb), () => uploadToCNB(data, buffer, config.imgBed?.cnb), config.imgBed?.cnb?.stats !== false],
+      ['bilibili', 'B站', !!config.imgBed?.bilibili, () => this.uploadToBilibili(data, buffer), true],
+      ['huaban', '花瓣网', !!config.imgBed?.huaban, () => this.uploadToHuaban(data, buffer), true],
+      ['cos', 'COS', !!(config.imgBed?.cos?.createUploadKeyUrl && config.imgBed?.cos?.cosBucketUrlPrefix), () => this.uploadToCOS(data, buffer), true],
+      ['qqchannel', 'QQ频道', !!(config.imgBed?.qqchannel?.botQQ && config.imgBed?.qqchannel?.channelId), () => this.uploadToQQChannel(data, buffer), true],
+      ['telegraph', 'Telegraph', !!config.imgBed?.telegraph, () => this.uploadToTelegraph(data, buffer), true],
+      ['gitcode', 'gitcode', true, () => this.uploadToGitcode(data, buffer), true]
     ]
 
-    for (const [name, upload] of beds) {
-      const url = await upload()
-      if (url) {
-        Bot.makeLog('debug', [`图床上传成功: ${name}`], data.self_id)
-        return saveCache(url)
+    const recordStat = async (record) => {
+      try {
+        await recordImageBedStat(record)
+      } catch (err) {
+        Bot.makeLog('debug', ['图床统计写入失败', err], data.self_id)
+      }
+    }
+
+    for (const [bed, name, enabled, upload, statsEnabled] of beds) {
+      if (!enabled) continue
+      const start = Date.now()
+      try {
+        const url = await upload()
+        if (statsEnabled) await recordStat({
+          bed,
+          name,
+          success: !!url,
+          size: buffer.length,
+          cost: Date.now() - start,
+          error: url ? '' : 'empty_result'
+        })
+        if (url) {
+          Bot.makeLog('debug', [`图床上传成功: ${name}`], data.self_id)
+          return saveCache(url)
+        }
+      } catch (err) {
+        if (statsEnabled) await recordStat({
+          bed,
+          name,
+          success: false,
+          size: buffer.length,
+          cost: Date.now() - start,
+          error: err.message
+        })
+        Bot.makeLog('debug', [`图床上传失败: ${name}`, err.message], data.self_id)
       }
     }
 
@@ -327,9 +366,7 @@ const adapter = new class QQBotAdapter {
 
   async makeMarkdownImage(data, file, summary = '图片') {
     const buffer = await Bot.Buffer(file)
-    const image =
-      await this.makeBotImage(buffer) ||
-      { url: await Bot.fileToUrl(file) }
+    const image = await this.makeBotImage(buffer) || {}
 
     try {
       const size = imageSize(buffer)
@@ -361,12 +398,14 @@ const adapter = new class QQBotAdapter {
       }
     }
 
-    Bot.makeLog('debug', [`图片URL: ${image.url}`, `来源: ${image.url?.includes('File/') ? 'fileToUrl(本地服务)' : image.url?.includes('gchat.qpic.cn') ? 'QQ CDN' : '图床'}`], data.self_id)
-
     if (!image.url?.startsWith?.('http')) {
       const imgBedUrl = await this.uploadToImageBed(data, buffer)
       if (imgBedUrl) image.url = imgBedUrl
     }
+
+    if (!image.url?.startsWith?.('http')) image.url = await Bot.fileToUrl(file)
+
+    Bot.makeLog('debug', [`图片URL: ${image.url}`, `来源: ${String(image.url).includes('File/') ? 'fileToUrl(本地服务)' : String(image.url).includes('gchat.qpic.cn') ? 'QQ CDN' : '图床'}`], data.self_id)
 
     return {
       des: `![${summary} #${image.width || 0}px #${image.height || 0}px]`,
@@ -2574,6 +2613,11 @@ export class QQBotAdapter extends plugin {
           permission: config.permission
         },
         {
+          reg: /^#?图床状态(?:\s*[\w\u4e00-\u9fa5-]+)?(?:\s*\d+\s*天?)?$/i,
+          fnc: 'imageBedStat',
+          permission: config.permission
+        },
+        {
           reg: /^#q+bot刷新co?n?fi?g$/i,
           fnc: 'refConfig',
           permission: config.permission
@@ -2772,6 +2816,36 @@ export class QQBotAdapter extends plugin {
     }
     const msg = await dau.getUserStatsMsg(this.e)
     if (msg.length) this.reply(msg, true)
+  }
+
+  async imageBedStat() {
+    const raw = this.e.msg.replace(/^#?图床状态/i, '').trim()
+    const dayMatch = raw.match(/(\d+)\s*天?/)
+    const days = Math.min(Math.max(Number(dayMatch?.[1]) || 1, 1), IMG_BED_STATS_MAX_DAYS)
+    const bed = normalizeBed(raw.replace(dayMatch?.[0] || '', '').trim())
+    const stats = await getImageBedStats(days, bed)
+    const msg = formatImageBedStats(stats)
+    const dayText = days === 1 ? '' : ` ${days}天`
+
+    if (!bed && stats.rows.length) {
+      const buttons = _.chunk(stats.rows.map(row => ({
+        text: `${row.name}详情`,
+        callback: `#图床状态 ${row.bed}${dayText}`
+      })), 3)
+      return this.reply([msg, segment.button(...buttons)], true)
+    }
+
+    if (bed) {
+      return this.reply([msg, segment.button([{
+        text: '全部图床',
+        callback: `#图床状态${dayText}`
+      }, {
+        text: `${getBedName(bed)}详情`,
+        callback: `#图床状态 ${bed}${dayText}`
+      }])], true)
+    }
+
+    await this.reply(msg, true)
   }
 
   // 自欺欺人大法

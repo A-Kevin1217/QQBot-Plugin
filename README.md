@@ -115,6 +115,14 @@ pnpm install                # 让依赖版本对上
 17. `config/QQBot.yaml`中`imgBed`图床配置,当Bot上传图片失败时自动使用图床上传,支持多个图床回退,Redis缓存默认10分钟
     ```yml
     imgBed:
+      enable: true # 总图床开关
+      cnb:
+        enable: true
+        baseUrl: https://api.cnb.cool
+        token: '' # CNB Access Token
+        defaultRepo: QingYingX-Bot/Image # CNB 仓库路径
+        autodelete: 30 # 自动删除时间,单位秒,0为不自动删除
+        stats: true
       bilibili: '' # B站cookie,包含bili_jct和SESSDATA
       huaban: '' # 花瓣网cookie
       cos: # 腾讯COS图床(无需cookie)
@@ -128,7 +136,12 @@ pnpm install                # 让依赖版本对上
       cache_ttl: 600 # Redis缓存过期时间(秒)
     ```
     - 未配置的图床会自动跳过,无需删除
-    - 图床回退顺序: B站 → 花瓣网 → COS → QQ频道 → Telegraph → gitcode备用 → 默认图片
+    - 图床回退顺序: CNB → B站 → 花瓣网 → COS → QQ频道 → Telegraph → gitcode备用 → 默认图片
+    - `#图床状态`: 查看统计周期内使用过的全部图床,默认1天
+    - `#图床状态7天`: 查看全部图床7天统计
+    - 总览消息会附带各图床详情按钮,例如 `CNB详情`
+    - `#图床状态 cnb`: 只查看CNB图床详情
+    - `#图床状态 cnb 7天`: 只查看CNB图床7天统计
     - `level`
       - 优点: 统计了大部分数据
       - 缺点: 缓存存一份,level存一份
@@ -166,3 +179,4 @@ pnpm install                # 让依赖版本对上
 - #QQBot账号
 - #QQBot设置 + `机器人QQ号:AppID:Token:AppSecret:是否群Bot:是否频道私域`（是1 否0）
 - #QQBotMD + `机器人QQ号:raw`（默认使用raw模式，设置模板ID可切换为模板模式）
+- #图床状态 / #图床状态7天 / #图床状态 cnb
