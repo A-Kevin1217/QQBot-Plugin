@@ -6,6 +6,7 @@
     "node-fetch": "^3.3.2",
     "qq-official-bot": "1.2.2",
     "qrcode": "^1.5.3",
+    "sharp": "^0.33.5",
     "silk-wasm": "^3.3.3",
     "tweetnacl": "^1.0.3"
   }

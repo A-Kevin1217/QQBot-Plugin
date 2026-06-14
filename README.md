@@ -108,11 +108,17 @@ pnpm install                # 让依赖版本对上
     ```
 11. `config/QQBot.yaml`中`simplifiedSdkLog`是否简化sdk日志,若设置为`true`则不会打印` recv from Group(xxx):  xxx`,并且会简化发送为`send to Group(xxx): <markdown><button>`
 12. `config/QQBot.yaml`中`autoInputNotify: false`是否自动显示输入状态(正在输入...),开启后收到消息时会自动显示输入状态30秒
-13. `#QQBot一键群发`: 需要先配置模版 `template/oneKeySendGroupMsg_default.js`
-14. `config/QQBot.yaml`中`markdownImgScale: 1`是否对markdown中的图片进行等比例缩放,0.5为缩小50%,1.5为放大50%,以此类推
-15. `config/QQBot.yaml`中`sendButton: true`未开启全局MD时是否单独发送按钮
-16. `config/QQBot.yaml`中`dauDB: level`选择存储dau数据的数据库,可选: `level`, `redis`,以及`false`关闭dau统计(仅每日发言用户和群)
-17. `config/QQBot.yaml`中`imgBed`图床配置,当Bot上传图片失败时自动使用图床上传,支持多个图床回退,Redis缓存默认10分钟
+13. `config/QQBot.yaml`中`filter_only_at_other_bot: false`是否过滤只艾特其他Bot的消息,也可以使用`#QQBot设置其他Bot艾特过滤开启`
+14. `#QQBot一键群发`: 需要先配置模版 `template/oneKeySendGroupMsg_default.js`
+15. `config/QQBot.yaml`中`imageLength: 3`普通图片超过该大小时会使用`sharp`压缩,单位MB,设置为`0`关闭
+16. `config/QQBot.yaml`中`markdownImgScale: 1`是否对markdown中的图片进行等比例缩放,0.5为缩小50%,1.5为放大50%,以此类推
+17. `config/QQBot.yaml`中`sendButton: true`未开启全局MD时是否单独发送按钮
+18. `config/QQBot.yaml`中`chunkSize: 2`和`delay: 100`控制流式消息默认分片大小和分片延迟
+19. `#rawButton机器人QQ:true/false`: 控制指定Bot在Markdown里使用原生按钮还是转成蓝字命令
+20. 事件对象补充 `platform/openid/unionid/nickname/avatar/msg_idx/ref_msg_idx/msg_elements/reply_user/mentions/atbot` 等字段,方便插件直接读取
+21. 回调按钮会携带 `button_data`,重启后仍可从回调事件读取按钮内容
+22. `config/QQBot.yaml`中`dauDB: level`选择存储dau数据的数据库,可选: `level`, `redis`,以及`false`关闭dau统计(仅每日发言用户和群)
+23. `config/QQBot.yaml`中`imgBed`图床配置,当Bot上传图片失败时自动使用图床上传,支持多个图床回退,Redis缓存默认10分钟
     ```yml
     imgBed:
       enable: true # 总图床开关
@@ -120,7 +126,7 @@ pnpm install                # 让依赖版本对上
         enable: true
         baseUrl: https://api.cnb.cool
         token: '' # CNB Access Token
-        defaultRepo: QingYingX-Bot/Image # CNB 仓库路径
+        defaultRepo:  # CNB 仓库路径
         autodelete: 30 # 自动删除时间,单位秒,0为不自动删除
         stats: true
       bilibili: '' # B站cookie,包含bili_jct和SESSDATA
