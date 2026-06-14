@@ -341,8 +341,8 @@ const adapter = new class QQBotAdapter {
       }
     }
 
-    image.width = Math.floor(image.width * config.markdownImgScale)
-    image.height = Math.floor(image.height * config.markdownImgScale)
+    image.width = Math.floor(image.width * (config.markdownImgScale || 1))
+    image.height = Math.floor(image.height * (config.markdownImgScale || 1))
 
     if (Handler.has('QQBot.makeMarkdownImage')) {
       const res = await Handler.call(
