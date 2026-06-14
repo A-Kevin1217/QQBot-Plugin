@@ -2050,7 +2050,7 @@ const adapter = new class QQBotAdapter {
       message,
       raw_message,
       mentions,
-      at: atArray,
+      at: atArray[atArray.length - 1] || '',
       atall: mentions.some(m => m.scope === 'all'),
       atme
     }
@@ -2061,6 +2061,15 @@ const adapter = new class QQBotAdapter {
           if (data.message_type == 'group') i.qq = `${data.self_id}${this.sep}${i.user_id}`
           else i.qq = `qg_${i.user_id}`
           break
+      }
+    }
+
+    if (atUsers.length > 0 && !data.message.some(m => m.type === 'at')) {
+      for (const m of atUsers) {
+        const qq = data.message_type == 'group'
+          ? `${data.self_id}${this.sep}${m.member_openid || m.id}`
+          : `qg_${m.member_openid || m.id}`
+        data.message.push({ type: 'at', qq, text: `@${m.nick || m.name || ''}` })
       }
     }
 
