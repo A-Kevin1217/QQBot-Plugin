@@ -278,6 +278,8 @@ const adapter = new class QQBotAdapter {
   }
 
   async uploadToImageBed(data, buffer) {
+    if (config.imgBed?.enable === false) return
+
     const md5 = crypto.createHash('md5').update(buffer).digest('hex')
     const cacheKey = `Yunzai:QQBot:imgBed:${md5}`
     const ttl = config.imgBed?.cache_ttl || 600
@@ -358,6 +360,8 @@ const adapter = new class QQBotAdapter {
         typeof res == 'object' ? Object.assign(image, res) : image.url = res
       }
     }
+
+    Bot.makeLog('debug', [`图片URL: ${image.url}`, `来源: ${image.url?.includes('File/') ? 'fileToUrl(本地服务)' : image.url?.includes('gchat.qpic.cn') ? 'QQ CDN' : '图床'}`], data.self_id)
 
     if (!image.url?.startsWith?.('http')) {
       const imgBedUrl = await this.uploadToImageBed(data, buffer)

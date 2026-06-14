@@ -28,6 +28,7 @@ let { config, configSave } = await makeConfig('QQBot', {
   sep: '',
   dauDB: 'redis',
   imgBed: {
+    enable: true,
     cos: { createUploadKeyUrl: 'https://ci-exhibition.cloud.tencent.com/samples/createUploadKey', cosBucketUrlPrefix: '' },
     qqchannel: { botQQ: '', channelId: '' },
     bilibili: '',
