@@ -104,6 +104,7 @@ const adapter = new class QQBotAdapter {
     }
 
     this.sep = ":"
+    this.callbackEventCache = new Map()
     if (process.platform === "win32")
       this.sep = ""
     this.bind_user = {}
@@ -1235,6 +1236,10 @@ const adapter = new class QQBotAdapter {
 
   sendFriendMsg(data, msg, event) {
     if (!event) event = {}
+    if (!event.event_id && data.self_id && data.user_id) {
+      const cachedEventId = this.callbackEventCache.get(`${data.self_id}:${data.user_id}`)
+      if (cachedEventId) event.event_id = cachedEventId
+    }
     if (data.smallbtn) event.smallbtn = true
     if (data.stream === undefined) data.stream = config.stream
     return this.sendMsg(data, msg => {
@@ -1249,6 +1254,10 @@ const adapter = new class QQBotAdapter {
 
   async sendGroupMsg(data, msg, event) {
     if (!event) event = {}
+    if (!event.event_id && data.self_id && data.group_id) {
+      const cachedEventId = this.callbackEventCache.get(`${data.self_id}:${data.group_id}`)
+      if (cachedEventId) event.event_id = cachedEventId
+    }
     if (data.smallbtn) event.smallbtn = true
 
     if (Handler.has('QQBot.group.sendMsg')) {
@@ -1960,7 +1969,7 @@ const adapter = new class QQBotAdapter {
     }
     return {
       ...i,
-      sendMsg: msg => this.sendGroupMsg(i, msg),
+      sendMsg: (msg, event) => this.sendGroupMsg(i, msg, event),
       pickMember: user_id => this.pickMember(id, group_id, user_id),
       recallMsg: message_id => this.recallGroupMsg(i, message_id),
       getMemberMap: () => i.bot.gml.get(group_id)
@@ -2411,7 +2420,7 @@ const adapter = new class QQBotAdapter {
 
     const wrapWithEventId = (msg) => {
       msg = Array.isArray(msg) ? [...msg] : [msg]
-      msg.unshift({ type: 'reply', id: `event_${interactionEventId}` })
+      msg.unshift({ type: 'reply', event_id: interactionEventId })
       return msg
     }
 
@@ -2423,7 +2432,7 @@ const adapter = new class QQBotAdapter {
         data.reply = msg => this.sendFriendMsg(
           { ...data, user_id: event.operator_id },
           wrapWithEventId(msg),
-          { event_id: `event_${interactionEventId}` }
+          { event_id: interactionEventId }
         )
         await this.setFriendMap(data)
         break
@@ -2433,9 +2442,15 @@ const adapter = new class QQBotAdapter {
         data.reply = msg => this.sendGroupMsg(
           { ...data, group_id: event.group_id },
           wrapWithEventId(msg),
-          { event_id: `event_${interactionEventId}` }
+          { event_id: interactionEventId }
         )
         await this.setGroupMap(data)
+        this.callbackEventCache.set(`${id}:${event.group_id}`, interactionEventId)
+        this.callbackEventCache.set(`${id}:${event.operator_id}`, interactionEventId)
+        setTimeout(() => {
+          this.callbackEventCache.delete(`${id}:${event.group_id}`)
+          this.callbackEventCache.delete(`${id}:${event.operator_id}`)
+        }, 5 * 60 * 1000)
         break
       case 'guild':
         break
@@ -2464,6 +2479,18 @@ const adapter = new class QQBotAdapter {
       platform: event.notice_type === 'guild' ? 'guild-notice' : 'QQ-notice'
     }
     this.setGenerateUrl(data)
+
+    const noticeEventId = event.notice_id?.startsWith?.('INTERACTION_CREATE:')
+      ? event.notice_id
+      : (event.notice_id ? `INTERACTION_CREATE:${event.notice_id}` : null)
+    if (noticeEventId && event.group_id) {
+      this.callbackEventCache.set(`${id}:${event.group_id}`, noticeEventId)
+      setTimeout(() => this.callbackEventCache.delete(`${id}:${event.group_id}`), 5 * 60 * 1000)
+    }
+    if (noticeEventId && event.user_id) {
+      this.callbackEventCache.set(`${id}:${event.user_id}`, noticeEventId)
+      setTimeout(() => this.callbackEventCache.delete(`${id}:${event.user_id}`), 5 * 60 * 1000)
+    }
 
     if (event.notice_type === 'friend' && event.user_id) {
       data.reply = msg => this.sendFriendMsg({
@@ -2500,7 +2527,7 @@ const adapter = new class QQBotAdapter {
             })
           }
         }
-        break
+        return
       case 'decrease':
         Bot[data.self_id].dau.setDau('group_decrease', data)
       case 'update':
@@ -2638,8 +2665,8 @@ const adapter = new class QQBotAdapter {
             return await origRegular(ep, buildResult, opts)
           } catch (e) {
             const code = e.message?.match(/code\((\d+)\)/)?.[1]
-            if (buildResult.messagePayload && ['22007', '40034128'].includes(code)) {
-              logger.warn(`被动回复超限(code(${code}))，正在尝试通过主动消息发送`)
+            if (buildResult.messagePayload && ['22007', '40034128', '40034105'].includes(code)) {
+              logger.warn(`被动回复失败(code(${code}))，正在尝试通过主动消息发送`)
               delete buildResult.messagePayload.msg_id
               delete buildResult.messagePayload.event_id
               return await origRegular(ep, buildResult, opts)
