@@ -2103,7 +2103,8 @@ const adapter = new class QQBotAdapter {
       nickname: event.sender.user_name || user?.nickname || '',
       avatar: `https://q.qlogo.cn/qqapp/${data.bot.info.appid}/${event.sender.user_id}/0`,
       unionid: event.author?.union_openid || user?.unionid || '',
-      openid: event.sender?.user_id || user?.openid || ''
+      openid: event.sender?.user_id || user?.openid || '',
+      role: event.author?.member_role
     }
     data.group_id = `${data.self_id}${this.sep}${event.group_id}`
     data.platform = 'QQ-group'
@@ -2833,8 +2834,27 @@ const adapter = new class QQBotAdapter {
       return Bot.makeLog("warn", "找不到对应Bot", appid)
     if (req.body?.d && "plain_token" in req.body.d)
       return this.makeWebHookSign(req, this.appid[appid].info.secret)
-    if (req.body && "t" in req.body)
-      this.appid[appid].sdk.dispatchEvent(req.body.t, req.body)
+    if (req.body && "t" in req.body) {
+      const id = this.appid[appid].uin
+      const { t, d } = req.body
+
+      if (t === 'GROUP_MEMBER_ADD' || t === 'GROUP_MEMBER_REMOVE') {
+        const sub_type = t === 'GROUP_MEMBER_ADD' ? 'increase' : 'decrease'
+        Bot.makeLog('debug', [`群成员${sub_type === 'increase' ? '加入' : '离开'}事件`, d], id)
+        this.makeNotice(id, {
+          event_id: req.body.id,
+          notice_type: 'group',
+          sub_type,
+          notice_id: req.body.id,
+          group_id: d.group_openid,
+          user_id: d.member_openid,
+          time: d.timestamp,
+          raw: req.body,
+        })
+      } else {
+        this.appid[appid].sdk.dispatchEvent(t, req.body)
+      }
+    }
     req.res.send({ code: 0 })
   }
 
