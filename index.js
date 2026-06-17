@@ -2562,7 +2562,7 @@ const adapter = new class QQBotAdapter {
             })
           }
         }
-        return
+        break
       case 'decrease':
         Bot[data.self_id].dau.setDau('group_decrease', data)
       case 'update':
