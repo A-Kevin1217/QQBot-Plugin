@@ -1973,6 +1973,7 @@ const adapter = new class QQBotAdapter {
   }
 
   pickMember(id, group_id, user_id) {
+    if (!user_id) return undefined
     if (config.toQQUin && userIdCache[user_id]) {
       user_id = userIdCache[user_id]
     }
@@ -2503,12 +2504,12 @@ const adapter = new class QQBotAdapter {
       raw_event: event.raw,
       bot: Bot[id],
       self_id: id,
-      post_type: event.post_type,
+      post_type: event.post_type || 'notice',
       notice_type: event.notice_type,
       sub_type: event.sub_type,
       notice_id: event.notice_id,
-      group_id: event.group_id,
-      user_id: event.user_id || event.operator_id,
+      group_id: event.group_id ? `${id}${this.sep}${event.group_id}` : event.group_id,
+      user_id: event.user_id ? `${id}${this.sep}${event.user_id}` : (event.operator_id ? `${id}${this.sep}${event.operator_id}` : (event.raw?.d?.member_openid ? `${id}${this.sep}${event.raw.d.member_openid}` : undefined)),
       raw_group_id: event.group_id,
       raw_user_id: event.user_id || event.operator_id,
       platform: event.notice_type === 'guild' ? 'guild-notice' : 'QQ-notice'
@@ -2539,6 +2540,10 @@ const adapter = new class QQBotAdapter {
         ...data,
         group_id: event.group_id
       }, msg, { event_id: data.event_id })
+      data.group = this.pickGroup(id, data.group_id)
+      if (data.user_id) {
+        data.member = this.pickMember(id, data.group_id, data.user_id)
+      }
     }
 
     switch (data.sub_type) {
@@ -2615,13 +2620,21 @@ const adapter = new class QQBotAdapter {
       mode: 'websocket'
     }
 
-    if (Number(token[4])) opts.intents.push('GROUP_AND_C2C_EVENT')
+    if (Number(token[4])) {
+      opts.intents.push('GROUP_AND_C2C_EVENT')
+      opts._groupMemberIntent = true
+    }
 
     if (Number(token[5])) opts.intents.push('GUILD_MESSAGES')
     else opts.intents.push('PUBLIC_GUILD_MESSAGES')
 
     const sdk = new QQBot(opts)
     disableAxiosEnvProxy(sdk.request)
+
+    if (opts._groupMemberIntent) {
+      const origGetValidIntends = sdk.sessionManager.getValidIntends.bind(sdk.sessionManager)
+      sdk.sessionManager.getValidIntends = () => origGetValidIntends() | (1 << 24)
+    }
 
     {
       const StreamInputMode = { REPLACE: 'replace' }
@@ -2810,6 +2823,35 @@ const adapter = new class QQBotAdapter {
 
     Bot[id].sdk.on('message', event => this.makeMessage(id, event))
     Bot[id].sdk.on('notice', event => this.makeNotice(id, event))
+
+    // 注册 GROUP_MEMBER_ADD/REMOVE 事件的 QQEvent 映射和 parser
+    {
+      const { QQEvent, EventParserMap } = await import('qq-official-bot/lib/events/index.js')
+      QQEvent.GROUP_MEMBER_ADD = 'notice.group.increase'
+      QQEvent.GROUP_MEMBER_REMOVE = 'notice.group.decrease'
+      EventParserMap.set('notice.group.increase', function (event, payload) {
+        this.logger.info(`群新增：${payload.group_openid}`)
+        return {
+          event_id: payload.event_id,
+          notice_type: 'group',
+          sub_type: 'increase',
+          group_id: payload.group_openid,
+          user_id: payload.member_openid,
+          time: Math.floor(payload.timestamp / 1000)
+        }
+      })
+      EventParserMap.set('notice.group.decrease', function (event, payload) {
+        this.logger.info(`群减少：${payload.group_openid}`)
+        return {
+          event_id: payload.event_id,
+          notice_type: 'group',
+          sub_type: 'decrease',
+          group_id: payload.group_openid,
+          user_id: payload.member_openid,
+          time: Math.floor(payload.timestamp / 1000)
+        }
+      })
+    }
 
     Bot.makeLog("mark", `${this.name}(${this.id}) ${this.version} ${Bot[id].nickname} 已连接`, id)
     Bot.em(`connect.${id}`, { self_id: id })
