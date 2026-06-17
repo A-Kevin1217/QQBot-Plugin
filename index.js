@@ -1144,6 +1144,8 @@ const adapter = new class QQBotAdapter {
     const rets = { message_id: [], data: [], error: [] }
     let msgs
 
+    Bot.makeLog('debug', ['sendMsg开始执行', { hasFiles: !!(data._files && data._files.length), filesCount: data._files?.length || 0 }], data.self_id)
+
     const sendMsg = async () => {
       for (const i of msgs) {
         try {
@@ -1217,7 +1219,20 @@ const adapter = new class QQBotAdapter {
     }
 
     if (data._files && data._files.length) {
-      await this.sendFiles(data, data._files)
+      Bot.makeLog('debug', ['开始发送文件', { filesCount: data._files.length }], data.self_id)
+      const fileResults = await this.sendFiles(data, data._files)
+      if (fileResults) {
+        Bot.makeLog('debug', ['文件发送完成', { 
+          message_id_count: fileResults.message_id.length, 
+          data_count: fileResults.data.length, 
+          error_count: fileResults.error.length 
+        }], data.self_id)
+        rets.message_id.push(...fileResults.message_id)
+        rets.data.push(...fileResults.data)
+        rets.error.push(...fileResults.error)
+      } else {
+        Bot.makeLog('warn', ['文件发送返回空结果'], data.self_id)
+      }
       data._files = []
     }
 
@@ -1603,6 +1618,11 @@ const adapter = new class QQBotAdapter {
 
       Bot.makeLog('info', ['分片上传成功', filesResult], data.self_id)
 
+      Bot.makeLog('debug', ['文件上传完成', { 
+        file_info: filesResult?.file_info, 
+        hasFile: !!filesResult?.file_info 
+      }], data.self_id)
+
       return filesResult
     } catch (error) {
       Bot.makeLog('error', ['文件上传失败', error.message], data.self_id)
@@ -1680,7 +1700,11 @@ const adapter = new class QQBotAdapter {
         }, actualRecallTime * 1000)
       }
 
-      return { id: sendResult.id }
+      if (!sendResult || !sendResult.id) {
+        Bot.makeLog('warn', ['文件消息发送成功但未返回ID', { sendResult, target_type, target_id }], data.self_id)
+      }
+
+      return { id: sendResult?.id || null }
     } catch (error) {
       Bot.makeLog('error', ['文件消息发送失败', error.message], data.self_id)
       throw error
@@ -1700,14 +1724,24 @@ const adapter = new class QQBotAdapter {
 
     Bot.makeLog('debug', ['准备发送文件列表', { target_type, target_id, count: files.length }], data.self_id)
 
+    const rets = { message_id: [], data: [], error: [] }
+
     for (const fileInfo of files) {
       try {
-        await this.sendFileMessage(data, target_id, target_type, fileInfo)
+        const result = await this.sendFileMessage(data, target_id, target_type, fileInfo)
         Bot.makeLog('info', ['文件发送成功', { target_type, target_id, file: fileInfo.name, force_chunk: fileInfo.force_chunk, recall_time: fileInfo.recall_time }], data.self_id)
+        
+        if (result && result.id) {
+          rets.message_id.push(result.id)
+          rets.data.push(result)
+        }
       } catch (err) {
         Bot.makeLog('error', ['发送文件失败', fileInfo, err.message, err.response?.data], data.self_id)
+        rets.error.push(err)
       }
     }
+
+    return rets
   }
 
   async makeGuildMsg(data, msg) {
