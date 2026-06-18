@@ -64,6 +64,16 @@ function disableAxiosEnvProxy(request) {
   if (request?.defaults) request.defaults.proxy = false
 }
 
+function normalizeReplySegment(i) {
+  const id = i?.id ?? i?.data?.id
+  if (id == null || id === '') return null
+  const idText = String(id)
+  if (idText.startsWith('event_')) {
+    return { type: 'reply', event_id: idText.replace(/^event_/, '') }
+  }
+  return { ...i, id: idText }
+}
+
 const startTime = new Date()
 logger.info(logger.yellow('- 正在加载 QQBot 适配器插件'))
 
@@ -645,11 +655,7 @@ const adapter = new class QQBotAdapter {
           else button.push(i)
           break
         case 'reply':
-          if (i.id.startsWith('event_')) {
-            reply = { type: 'reply', event_id: i.id.replace(/^event_/, '') }
-          } else {
-            reply = i
-          }
+          reply = normalizeReplySegment(i) || reply
           continue
         case 'node':
           for (const { message } of i.data) { messages.push(...(await this.makeRawMarkdownMsg(data, message))) }
@@ -894,11 +900,7 @@ const adapter = new class QQBotAdapter {
           else button.push(i)
           break
         case 'reply':
-          if (i.id.startsWith('event_')) {
-            reply = { type: 'reply', event_id: i.id.replace(/^event_/, '') }
-          } else {
-            reply = i
-          }
+          reply = normalizeReplySegment(i) || reply
           continue
         case 'raw':
           if (Array.isArray(i.data)) {
@@ -1051,11 +1053,7 @@ const adapter = new class QQBotAdapter {
           break
         }
         case 'reply':
-          if (i.id.startsWith('event_')) {
-            reply = { type: 'reply', event_id: i.id.replace(/^event_/, '') }
-          } else {
-            reply = i
-          }
+          reply = normalizeReplySegment(i) || reply
           continue
         case 'markdown':
           if (typeof i.data == 'object') { i = { type: 'markdown', ...i.data } } else { i = { type: 'markdown', content: i.data } }
@@ -1780,11 +1778,7 @@ const adapter = new class QQBotAdapter {
           // break
           return []
         case 'reply':
-          if (i.id.startsWith('event_')) {
-            reply = { type: 'reply', event_id: i.id.replace(/^event_/, '') }
-          } else {
-            reply = i
-          }
+          reply = normalizeReplySegment(i) || reply
           continue
         case 'markdown':
           if (typeof i.data == 'object') { i = { type: 'markdown', ...i.data } } else { i = { type: 'markdown', content: i.data } }
