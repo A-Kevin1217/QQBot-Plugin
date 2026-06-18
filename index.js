@@ -2827,27 +2827,35 @@ const adapter = new class QQBotAdapter {
     // 注册 GROUP_MEMBER_ADD/REMOVE 事件的 QQEvent 映射和 parser
     {
       const { QQEvent, EventParserMap } = await import('qq-official-bot/lib/events/index.js')
-      QQEvent.GROUP_MEMBER_ADD = 'notice.group.increase'
-      QQEvent.GROUP_MEMBER_REMOVE = 'notice.group.decrease'
-      EventParserMap.set('notice.group.increase', function (event, payload) {
-        this.logger.info(`群新增：${payload.group_openid}`)
+      QQEvent.GROUP_MEMBER_ADD = 'notice.group.member.increase'
+      QQEvent.GROUP_MEMBER_REMOVE = 'notice.group.member.decrease'
+      EventParserMap.set(QQEvent.GROUP_MEMBER_ADD, function (event, payload) {
+        const groupOpenid = payload.group_openid || payload.group_id || ''
+        const memberOpenid = payload.member_openid || payload.user_id || ''
+        this.logger.info(`群(${groupOpenid})新增成员(${memberOpenid})`)
         return {
           event_id: payload.event_id,
           notice_type: 'group',
-          sub_type: 'increase',
-          group_id: payload.group_openid,
-          user_id: payload.member_openid,
+          sub_type: 'member.increase',
+          group_id: groupOpenid,
+          group_openid: groupOpenid,
+          user_id: memberOpenid,
+          member_openid: memberOpenid,
           time: Math.floor(payload.timestamp / 1000)
         }
       })
-      EventParserMap.set('notice.group.decrease', function (event, payload) {
-        this.logger.info(`群减少：${payload.group_openid}`)
+      EventParserMap.set(QQEvent.GROUP_MEMBER_REMOVE, function (event, payload) {
+        const groupOpenid = payload.group_openid || payload.group_id || ''
+        const memberOpenid = payload.member_openid || payload.user_id || ''
+        this.logger.info(`群(${groupOpenid})减少成员(${memberOpenid})`)
         return {
           event_id: payload.event_id,
           notice_type: 'group',
-          sub_type: 'decrease',
-          group_id: payload.group_openid,
-          user_id: payload.member_openid,
+          sub_type: 'member.decrease',
+          group_id: groupOpenid,
+          group_openid: groupOpenid,
+          user_id: memberOpenid,
+          member_openid: memberOpenid,
           time: Math.floor(payload.timestamp / 1000)
         }
       })
@@ -2881,15 +2889,17 @@ const adapter = new class QQBotAdapter {
       const { t, d } = req.body
 
       if (t === 'GROUP_MEMBER_ADD' || t === 'GROUP_MEMBER_REMOVE') {
-        const sub_type = t === 'GROUP_MEMBER_ADD' ? 'increase' : 'decrease'
-        Bot.makeLog('debug', [`群成员${sub_type === 'increase' ? '加入' : '离开'}事件`, d], id)
+        const sub_type = t === 'GROUP_MEMBER_ADD' ? 'member.increase' : 'member.decrease'
+        Bot.makeLog('debug', [`群成员${sub_type === 'member.increase' ? '加入' : '离开'}事件`, d], id)
         this.makeNotice(id, {
           event_id: req.body.id,
           notice_type: 'group',
           sub_type,
           notice_id: req.body.id,
           group_id: d.group_openid,
+          group_openid: d.group_openid,
           user_id: d.member_openid,
+          member_openid: d.member_openid,
           time: d.timestamp,
           raw: req.body,
         })
