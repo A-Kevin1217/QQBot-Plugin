@@ -2544,6 +2544,7 @@ const adapter = new class QQBotAdapter {
       case 'action':
         return this.makeCallback(id, event)
       case 'increase':
+      case 'member.increase':
         Bot[data.self_id].dau.setDau('group_increase', data)
         if (event.notice_type === 'group') {
           const path = join(process.cwd(), 'plugins', 'QQBot-Plugin', 'Model', 'template', 'groupIncreaseMsg.js')
@@ -2563,10 +2564,10 @@ const adapter = new class QQBotAdapter {
         }
         break
       case 'decrease':
-        Bot[data.self_id].dau.setDau('group_decrease', data)
-      case 'update':
-      case 'member.increase':
       case 'member.decrease':
+        Bot[data.self_id].dau.setDau('group_decrease', data)
+        break
+      case 'update':
       case 'member.update':
       case 'add':
       case 'remove':
@@ -2580,7 +2581,9 @@ const adapter = new class QQBotAdapter {
         return
     }
 
-    Bot.em(`${data.post_type}.${data.notice_type}.${data.sub_type}`, data)
+    // 对于框架兼容，映射 sub_type 到 Yunzai 期望的事件名
+    const emSubType = data.sub_type.replace('member.', '')
+    Bot.em(`${data.post_type}.${data.notice_type}.${emSubType}`, data)
   }
 
   getFriendMap(id) {
