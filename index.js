@@ -2710,7 +2710,7 @@ const adapter = new class QQBotAdapter {
             return await origRegular(ep, buildResult, opts)
           } catch (e) {
             const code = e.message?.match(/code\((\d+)\)/)?.[1]
-            if (buildResult.messagePayload && ['22007', '40034128', '40034105'].includes(code)) {
+            if (buildResult.messagePayload && ['22007', '40034025', '40034128', '40034105'].includes(code)) {
               logger.warn(`被动回复失败(code(${code}))，正在尝试通过主动消息发送`)
               delete buildResult.messagePayload.msg_id
               delete buildResult.messagePayload.event_id
