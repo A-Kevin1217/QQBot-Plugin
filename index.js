@@ -35,7 +35,7 @@ const QQBot = await (async () => {
     try {
       const { Bot } = await import(pkg)
       return Bot
-    } catch (e) {}
+    } catch (e) { }
   }
 })()
 
@@ -84,7 +84,7 @@ const _sdkVersion = await (async () => {
       const require = createRequire(import.meta.url)
       const { version } = require(`${pkg}/package.json`)
       return `${pkg} v${version}`
-    } catch (e) {}
+    } catch (e) { }
   }
   return 'QQBot'
 })()
@@ -206,7 +206,7 @@ const adapter = new class QQBotAdapter {
       })
       const json = await res.json()
       if (json.code === 0 && json.data?.image_url) return json.data.image_url
-    } catch {}
+    } catch { }
   }
 
   async uploadToHuaban(data, buffer) {
@@ -229,7 +229,7 @@ const adapter = new class QQBotAdapter {
       })
       const json = await res.json()
       if (json.key) return `https://hbimg.huabanimg.com/${json.key}`
-    } catch {}
+    } catch { }
   }
 
   async uploadToTelegraph(data, buffer) {
@@ -240,7 +240,7 @@ const adapter = new class QQBotAdapter {
       const res = await fetch(`${api}?source=bugtracker`, { method: 'POST', body: form })
       const json = await res.json()
       if (json.src) return new URL(api).origin + json.src
-    } catch {}
+    } catch { }
   }
 
   async uploadToGitcode(data, buffer) {
@@ -252,7 +252,7 @@ const adapter = new class QQBotAdapter {
       })
       const json = await res.json()
       if (json.url) return json.url
-    } catch {}
+    } catch { }
   }
 
   async uploadToCOS(data, buffer) {
@@ -276,7 +276,7 @@ const adapter = new class QQBotAdapter {
         headers: { 'Content-Type': mime, 'Authorization': json.data.uploadAuthorization }
       })
       if (uploadRes.ok) return uploadUrl
-    } catch {}
+    } catch { }
   }
 
   async uploadToQQChannel(data, buffer) {
@@ -300,7 +300,7 @@ const adapter = new class QQBotAdapter {
         const md5 = crypto.createHash('md5').update(buffer).digest('hex').toUpperCase()
         return `https://gchat.qpic.cn/qmeetpic/0/0-0-${md5}/0`
       }
-    } catch {}
+    } catch { }
   }
 
   #detectImageExt(buffer) {
@@ -329,11 +329,11 @@ const adapter = new class QQBotAdapter {
           await redis.del(cacheKey)
         }
       }
-    } catch {}
+    } catch { }
 
     const saveCache = async (url) => {
       if (url) {
-        try { await redis.set(cacheKey, url, { EX: ttl }) } catch {}
+        try { await redis.set(cacheKey, url, { EX: ttl }) } catch { }
       }
       return url
     }
@@ -1220,10 +1220,10 @@ const adapter = new class QQBotAdapter {
       Bot.makeLog('debug', ['开始发送文件', { filesCount: data._files.length }], data.self_id)
       const fileResults = await this.sendFiles(data, data._files)
       if (fileResults) {
-        Bot.makeLog('debug', ['文件发送完成', { 
-          message_id_count: fileResults.message_id.length, 
-          data_count: fileResults.data.length, 
-          error_count: fileResults.error.length 
+        Bot.makeLog('debug', ['文件发送完成', {
+          message_id_count: fileResults.message_id.length,
+          data_count: fileResults.data.length,
+          error_count: fileResults.error.length
         }], data.self_id)
         rets.message_id.push(...fileResults.message_id)
         rets.data.push(...fileResults.data)
@@ -1616,9 +1616,9 @@ const adapter = new class QQBotAdapter {
 
       Bot.makeLog('info', ['分片上传成功', filesResult], data.self_id)
 
-      Bot.makeLog('debug', ['文件上传完成', { 
-        file_info: filesResult?.file_info, 
-        hasFile: !!filesResult?.file_info 
+      Bot.makeLog('debug', ['文件上传完成', {
+        file_info: filesResult?.file_info,
+        hasFile: !!filesResult?.file_info
       }], data.self_id)
 
       return filesResult
@@ -1728,7 +1728,7 @@ const adapter = new class QQBotAdapter {
       try {
         const result = await this.sendFileMessage(data, target_id, target_type, fileInfo)
         Bot.makeLog('info', ['文件发送成功', { target_type, target_id, file: fileInfo.name, force_chunk: fileInfo.force_chunk, recall_time: fileInfo.recall_time }], data.self_id)
-        
+
         if (result && result.id) {
           rets.message_id.push(result.id)
           rets.data.push(result)
@@ -1840,7 +1840,7 @@ const adapter = new class QQBotAdapter {
         }
       ])
     }
-    
+
     if (reply) {
       for (const i of messages) i.unshift(reply)
     }
@@ -2535,6 +2535,13 @@ const adapter = new class QQBotAdapter {
         group_id: event.group_id
       }, msg, { event_id: data.event_id })
       data.group = this.pickGroup(id, data.group_id)
+      if (data.event_id) {
+        const sendMsg = data.group.sendMsg
+        data.group.sendMsg = (msg, source = {}) => sendMsg(msg, {
+          ...source,
+          event_id: source.event_id || data.event_id
+        })
+      }
       if (data.user_id) {
         data.member = this.pickMember(id, data.group_id, data.user_id)
       }
@@ -2713,7 +2720,7 @@ const adapter = new class QQBotAdapter {
             return await origRegular(ep, buildResult, opts)
           } catch (e) {
             const code = e.message?.match(/code\((\d+)\)/)?.[1]
-            if (buildResult.messagePayload && ['22007', '40034025', '40034128', '40034105'].includes(code)) {
+            if (buildResult.messagePayload && ['22007', '40034025', '40034128'].includes(code)) {
               logger.warn(`被动回复失败(code(${code}))，正在尝试通过主动消息发送`)
               delete buildResult.messagePayload.msg_id
               delete buildResult.messagePayload.event_id
