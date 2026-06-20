@@ -115,6 +115,7 @@ const adapter = new class QQBotAdapter {
 
     this.sep = ":"
     this.callbackEventCache = new Map()
+    this.noticeEventCache = new Set()
     if (process.platform === "win32")
       this.sep = ""
     this.bind_user = {}
@@ -2492,6 +2493,16 @@ const adapter = new class QQBotAdapter {
   }
 
   makeNotice(id, event) {
+    const noticeEventKey = event.event_id && `${id}:${event.event_id}`
+    if (noticeEventKey) {
+      if (this.noticeEventCache.has(noticeEventKey)) {
+        Bot.makeLog('debug', ['忽略重复通知事件', event.event_id], id)
+        return
+      }
+      this.noticeEventCache.add(noticeEventKey)
+      setTimeout(() => this.noticeEventCache.delete(noticeEventKey), 5 * 60 * 1000)
+    }
+
     const data = {
       event_id: event.event_id,
       raw: event,
@@ -2595,7 +2606,9 @@ const adapter = new class QQBotAdapter {
     // Yunzai 插件加载器根据事件对象字段匹配，因此兼容事件必须同步改写 sub_type。
     const emSubType = data.sub_type.replace('member.', '')
     if (emSubType !== data.sub_type) {
-      Bot.em(`${data.post_type}.${data.notice_type}.${data.sub_type}`, data)
+      // 原生四段事件只精确发送，避免它冒泡到 notice 后让插件加载器重复处理。
+      Bot.prepareEvent?.(data)
+      Bot.emit(`${data.post_type}.${data.notice_type}.${data.sub_type}`, data)
       Bot.em(`${data.post_type}.${data.notice_type}.${emSubType}`, {
         ...data,
         sub_type: emSubType
