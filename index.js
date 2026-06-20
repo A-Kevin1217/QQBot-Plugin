@@ -2512,6 +2512,7 @@ const adapter = new class QQBotAdapter {
       post_type: event.post_type || 'notice',
       notice_type: event.notice_type,
       sub_type: event.sub_type,
+      raw_message: event.raw_message || event.event_id || `${event.notice_type || 'notice'}.${event.sub_type || 'unknown'}`,
       notice_id: event.notice_id,
       group_id: event.group_id ? `${id}${this.sep}${event.group_id}` : event.group_id,
       user_id: event.user_id ? `${id}${this.sep}${event.user_id}` : (event.operator_id ? `${id}${this.sep}${event.operator_id}` : (event.raw?.d?.member_openid ? `${id}${this.sep}${event.raw.d.member_openid}` : undefined)),
