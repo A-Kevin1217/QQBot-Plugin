@@ -465,6 +465,7 @@ export default class Dau {
           this.group_decrease[group_id]++
           await this.setDB('group_decrease', this.group_decrease, 2)
         }
+        break
       case 'group_increase':
         if (this.dauDB === 'level') {
           if (!this.group_increase[group_id]) {

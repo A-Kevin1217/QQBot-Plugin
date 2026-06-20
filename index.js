@@ -2530,16 +2530,19 @@ const adapter = new class QQBotAdapter {
     }
 
     if (event.notice_type === 'group' && event.group_id) {
+      const replyEventId = ['increase', 'member.increase'].includes(data.sub_type)
+        ? data.event_id
+        : undefined
       data.reply = msg => this.sendGroupMsg({
         ...data,
         group_id: event.group_id
-      }, msg, { event_id: data.event_id })
+      }, msg, replyEventId ? { event_id: replyEventId } : {})
       data.group = this.pickGroup(id, data.group_id)
-      if (data.event_id) {
+      if (replyEventId) {
         const sendMsg = data.group.sendMsg
         data.group.sendMsg = (msg, source = {}) => sendMsg(msg, {
           ...source,
-          event_id: source.event_id || data.event_id
+          event_id: source.event_id || replyEventId
         })
       }
       if (data.user_id) {
@@ -2709,33 +2712,36 @@ const adapter = new class QQBotAdapter {
         }
       }
 
-      const origSend = sdk.messageService.sendMessage.bind(sdk.messageService)
-      sdk.messageService.sendMessage = async function (endpointPath, message, source, options) {
-        const origRegular = this.sendRegularMessage.bind(this)
-        this.sendRegularMessage = async function (ep, buildResult, opts) {
-          if (source?.smallbtn && buildResult.messagePayload?.keyboard?.content) {
-            buildResult.messagePayload.keyboard.content.style = { font_size: 'small' }
-          }
-          try {
-            return await origRegular(ep, buildResult, opts)
-          } catch (e) {
-            const code = e.message?.match(/code\((\d+)\)/)?.[1]
-            if (buildResult.messagePayload && ['22007', '40034025', '40034128'].includes(code)) {
-              logger.warn(`被动回复失败(code(${code}))，正在尝试通过主动消息发送`)
-              delete buildResult.messagePayload.msg_id
-              delete buildResult.messagePayload.event_id
-              return await origRegular(ep, buildResult, opts)
-            }
-            throw e
-          }
-        }
-        try { return await origSend(endpointPath, message, source, options) }
-        finally { this.sendRegularMessage = origRegular }
-      }
-
       const { createRequire } = await import('node:module')
       const _require = createRequire(import.meta.url)
       const { MessageBuilder } = _require('qq-official-bot/lib/message/builder.js')
+      const origRegular = sdk.messageService.sendRegularMessage.bind(sdk.messageService)
+      sdk.messageService.sendMessage = async function (endpointPath, message, source, options) {
+        const buildResult = await new MessageBuilder(
+          this.appid,
+          !endpointPath.startsWith('/v2'),
+          source
+        ).build(message)
+        if (source?.smallbtn && buildResult.messagePayload?.keyboard?.content) {
+          buildResult.messagePayload.keyboard.content.style = { font_size: 'small' }
+        }
+        if (buildResult.isFile) {
+          buildResult.messagePayload.media = await this.uploadFile(endpointPath, buildResult)
+        }
+        try {
+          return await origRegular(endpointPath, buildResult, options || {})
+        } catch (e) {
+          const code = e.message?.match(/code\((\d+)\)/)?.[1]
+          if (buildResult.messagePayload && ['22007', '40034025', '40034128'].includes(code)) {
+            logger.warn(`被动回复失败(code(${code}))，正在尝试通过主动消息发送`)
+            delete buildResult.messagePayload.msg_id
+            delete buildResult.messagePayload.event_id
+            return await origRegular(endpointPath, buildResult, options || {})
+          }
+          throw e
+        }
+      }
+
       sdk.messageService.sendRecallMessage = async function (endpointPath, message, source) {
         const messageBuilder = new MessageBuilder(this.appid, !endpointPath.startsWith('/v2'), source)
         const buildResult = await messageBuilder.build(message)
