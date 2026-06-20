@@ -2581,9 +2581,18 @@ const adapter = new class QQBotAdapter {
         return
     }
 
-    // 对于框架兼容，映射 sub_type 到 Yunzai 期望的事件名
+    // 保留 SDK 原生群成员事件，同时发送 Yunzai/ICQQ 兼容事件。
+    // Yunzai 插件加载器根据事件对象字段匹配，因此兼容事件必须同步改写 sub_type。
     const emSubType = data.sub_type.replace('member.', '')
-    Bot.em(`${data.post_type}.${data.notice_type}.${emSubType}`, data)
+    if (emSubType !== data.sub_type) {
+      Bot.em(`${data.post_type}.${data.notice_type}.${data.sub_type}`, data)
+      Bot.em(`${data.post_type}.${data.notice_type}.${emSubType}`, {
+        ...data,
+        sub_type: emSubType
+      })
+    } else {
+      Bot.em(`${data.post_type}.${data.notice_type}.${data.sub_type}`, data)
+    }
   }
 
   getFriendMap(id) {
@@ -2618,8 +2627,7 @@ const adapter = new class QQBotAdapter {
     }
 
     if (Number(token[4])) {
-      opts.intents.push('GROUP_AND_C2C_EVENT')
-      opts._groupMemberIntent = true
+      opts.intents.push('GROUP_AND_C2C_EVENT', 'GROUP_MEMBER')
     }
 
     if (Number(token[5])) opts.intents.push('GUILD_MESSAGES')
@@ -2627,11 +2635,6 @@ const adapter = new class QQBotAdapter {
 
     const sdk = new QQBot(opts)
     disableAxiosEnvProxy(sdk.request)
-
-    if (opts._groupMemberIntent) {
-      const origGetValidIntends = sdk.sessionManager.getValidIntends.bind(sdk.sessionManager)
-      sdk.sessionManager.getValidIntends = () => origGetValidIntends() | (1 << 24)
-    }
 
     {
       const StreamInputMode = { REPLACE: 'replace' }
@@ -2821,43 +2824,6 @@ const adapter = new class QQBotAdapter {
     Bot[id].sdk.on('message', event => this.makeMessage(id, event))
     Bot[id].sdk.on('notice', event => this.makeNotice(id, event))
 
-    // 注册 GROUP_MEMBER_ADD/REMOVE 事件的 QQEvent 映射和 parser
-    {
-      const { QQEvent, EventParserMap } = await import('qq-official-bot/lib/events/index.js')
-      QQEvent.GROUP_MEMBER_ADD = 'notice.group.member.increase'
-      QQEvent.GROUP_MEMBER_REMOVE = 'notice.group.member.decrease'
-      EventParserMap.set(QQEvent.GROUP_MEMBER_ADD, function (event, payload) {
-        const groupOpenid = payload.group_openid || payload.group_id || ''
-        const memberOpenid = payload.member_openid || payload.user_id || ''
-        this.logger.info(`群(${groupOpenid})新增成员(${memberOpenid})`)
-        return {
-          event_id: payload.event_id,
-          notice_type: 'group',
-          sub_type: 'member.increase',
-          group_id: groupOpenid,
-          group_openid: groupOpenid,
-          user_id: memberOpenid,
-          member_openid: memberOpenid,
-          time: Math.floor(payload.timestamp / 1000)
-        }
-      })
-      EventParserMap.set(QQEvent.GROUP_MEMBER_REMOVE, function (event, payload) {
-        const groupOpenid = payload.group_openid || payload.group_id || ''
-        const memberOpenid = payload.member_openid || payload.user_id || ''
-        this.logger.info(`群(${groupOpenid})减少成员(${memberOpenid})`)
-        return {
-          event_id: payload.event_id,
-          notice_type: 'group',
-          sub_type: 'member.decrease',
-          group_id: groupOpenid,
-          group_openid: groupOpenid,
-          user_id: memberOpenid,
-          member_openid: memberOpenid,
-          time: Math.floor(payload.timestamp / 1000)
-        }
-      })
-    }
-
     Bot.makeLog("mark", `${this.name}(${this.id}) ${this.version} ${Bot[id].nickname} 已连接`, id)
     Bot.em(`connect.${id}`, { self_id: id })
     return true
@@ -2882,27 +2848,7 @@ const adapter = new class QQBotAdapter {
     if (req.body?.d && "plain_token" in req.body.d)
       return this.makeWebHookSign(req, this.appid[appid].info.secret)
     if (req.body && "t" in req.body) {
-      const id = this.appid[appid].uin
-      const { t, d } = req.body
-
-      if (t === 'GROUP_MEMBER_ADD' || t === 'GROUP_MEMBER_REMOVE') {
-        const sub_type = t === 'GROUP_MEMBER_ADD' ? 'member.increase' : 'member.decrease'
-        Bot.makeLog('debug', [`群成员${sub_type === 'member.increase' ? '加入' : '离开'}事件`, d], id)
-        this.makeNotice(id, {
-          event_id: req.body.id,
-          notice_type: 'group',
-          sub_type,
-          notice_id: req.body.id,
-          group_id: d.group_openid,
-          group_openid: d.group_openid,
-          user_id: d.member_openid,
-          member_openid: d.member_openid,
-          time: d.timestamp,
-          raw: req.body,
-        })
-      } else {
-        this.appid[appid].sdk.dispatchEvent(t, req.body)
-      }
+      this.appid[appid].sdk.dispatchEvent(req.body.t, req.body)
     }
     req.res.send({ code: 0 })
   }
