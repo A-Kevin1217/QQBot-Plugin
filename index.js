@@ -74,6 +74,13 @@ function normalizeReplySegment(i) {
   return { ...i, id: idText }
 }
 
+function normalizeGroupMemberRole(role) {
+  const value = String(role ?? '').trim().toLowerCase()
+  if (/(^|_)owner$/.test(value)) return 'owner'
+  if (/(^|_)(admin|administrator)$/.test(value)) return 'admin'
+  return 'member'
+}
+
 const startTime = new Date()
 logger.info(logger.yellow('- 正在加载 QQBot 适配器插件'))
 
@@ -2092,6 +2099,7 @@ const adapter = new class QQBotAdapter {
 
   async makeGroupMessage(data, event) {
     const user = await data.bot.fl.get(`${data.self_id}${this.sep}${event.sender.user_id}`)
+    const role = normalizeGroupMemberRole(event.author?.member_role)
     data.sender = {
       user_id: `${data.self_id}${this.sep}${event.sender.user_id}`,
       raw_user_id: event.sender.user_id,
@@ -2100,7 +2108,10 @@ const adapter = new class QQBotAdapter {
       avatar: `https://q.qlogo.cn/qqapp/${data.bot.info.appid}/${event.sender.user_id}/0`,
       unionid: event.author?.union_openid || user?.unionid || '',
       openid: event.sender?.user_id || user?.openid || '',
-      role: event.author?.member_role
+      role,
+      is_admin: role === 'admin',
+      is_owner: role === 'owner',
+      is_member: role === 'member'
     }
     data.group_id = `${data.self_id}${this.sep}${event.group_id}`
     data.platform = 'QQ-group'
@@ -2127,6 +2138,7 @@ const adapter = new class QQBotAdapter {
     this.setGenerateUrl(data)
     await this.setFriendMap(data)
     await this.setGroupMap(data)
+    data.member = this.pickMember(data.self_id, data.group_id, data.user_id)
   }
 
   async makeDirectMessage(data, event) {
