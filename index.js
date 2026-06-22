@@ -2572,6 +2572,35 @@ const adapter = new class QQBotAdapter {
       if (data.user_id) {
         data.member = this.pickMember(id, data.group_id, data.user_id)
       }
+
+      if (['decrease', 'member.decrease'].includes(data.sub_type) && data.user_id) {
+        const memberMap = Bot[id].gml.get(data.group_id)
+        const rawUserId = data.raw_user_id || event.raw?.d?.member_openid
+        let cachedMember = memberMap?.get(data.user_id)
+
+        // 开启 QQ 号转换时，成员表可能以转换后的 user_id 为键，需要按原始 openid 回查。
+        if (!cachedMember && rawUserId && memberMap?.values) {
+          cachedMember = [...memberMap.values()].find(member =>
+            member?.raw_user_id === rawUserId || member?.openid === rawUserId
+          )
+        }
+
+        const cachedFriend = Bot[id].fl.get(data.user_id)
+        const nickname = cachedMember?.nickname || cachedFriend?.nickname || ''
+        data.sender = {
+          ...cachedFriend,
+          ...cachedMember,
+          user_id: data.user_id,
+          raw_user_id: rawUserId,
+          nickname
+        }
+        data.nickname = nickname
+        data.member = {
+          ...data.member,
+          ...cachedMember,
+          nickname
+        }
+      }
     }
 
     switch (data.sub_type) {
