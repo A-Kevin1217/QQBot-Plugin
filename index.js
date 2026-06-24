@@ -1160,6 +1160,7 @@ const adapter = new class QQBotAdapter {
           Bot.makeLog('debug', ['发送消息返回', ret], data.self_id)
 
           rets.data.push(ret)
+          this.rememberSentMessageRef(data, ret)
           if (ret.id) rets.message_id.push(ret.id)
           Bot[data.self_id].dau.setDau('send_msg', data)
         } catch (err) {
@@ -1391,6 +1392,95 @@ const adapter = new class QQBotAdapter {
     } catch (err) {
       Bot.makeLog('error', ['撤回消息失败', { target_type, target_id, message_id }, err.message, err.response?.data], data.self_id)
     }
+  }
+
+  stripSelfPrefix(self_id, value) {
+    if (value == null) return value
+    return String(value).replace(`${self_id}${this.sep}`, '')
+  }
+
+  async rememberMessageRef(bot, refIdx, messageId) {
+    if (!bot || !refIdx || !messageId) return
+    const trimmed = String(refIdx).trim()
+    try {
+      await redis.set(`wind-ref:${bot.uin}:${trimmed}`, String(messageId), { EX: 86400 })
+    } catch {}
+  }
+
+  async getMessageIdByRefIdx(bot, refIdx) {
+    if (!bot || !refIdx) return ''
+    const trimmed = String(refIdx).trim()
+    try {
+      return await redis.get(`wind-ref:${bot.uin}:${trimmed}`) || ''
+    } catch { return '' }
+  }
+
+  rememberReceivedMessageRef(data) {
+    if (!data?.msg_idx || !data?.message_id) return
+    this.rememberMessageRef(data.bot, data.msg_idx, data.message_id)
+  }
+
+  rememberSentMessageRef(data, ret) {
+    const messageId = ret?.msg_id || ret?.id || ret?.message_id
+    const refIdx = ret?.ext_info?.ref_idx || ret?.ext_info?.msg_idx || ret?.msg_idx
+    this.rememberMessageRef(data?.bot, refIdx, messageId)
+  }
+
+  extractMessageIdFromElements(elements) {
+    if (!Array.isArray(elements)) return ''
+    for (const elem of elements) {
+      if (!elem || typeof elem !== 'object') continue
+      const id = elem.id || elem.message_id || elem.msg_id
+      if (id) return String(id)
+    }
+    return ''
+  }
+
+  extractRefIdxCandidates(data) {
+    const candidates = []
+    const seen = new Set()
+    const add = value => {
+      value = String(value ?? '').trim()
+      if (!value || seen.has(value)) return
+      seen.add(value)
+      candidates.push(value)
+    }
+
+    add(data?.ref_msg_idx)
+    const ext = data?.raw?.message_scene?.ext
+    if (Array.isArray(ext)) {
+      for (const item of ext) {
+        if (typeof item !== 'string') continue
+        if (item.startsWith('ref_msg_idx=')) add(item.slice('ref_msg_idx='.length))
+      }
+    }
+    for (const elem of data?.msg_elements || []) {
+      if (elem && typeof elem === 'object') add(elem.msg_idx)
+    }
+    return candidates
+  }
+
+  async getReferencedMessageId(data) {
+    const directId = this.extractMessageIdFromElements(data?.msg_elements)
+    if (directId) return directId
+
+    for (const refIdx of this.extractRefIdxCandidates(data)) {
+      const messageId = await this.getMessageIdByRefIdx(data?.bot, refIdx)
+      if (messageId) return messageId
+    }
+    return ''
+  }
+
+  async resolveRecallMessageId(data, message_id) {
+    if (message_id && typeof message_id === 'object') {
+      return message_id.id || message_id.message_id || message_id.msg_id || ''
+    }
+
+    const id = String(message_id ?? '').trim()
+    if (!id) return this.getReferencedMessageId(data)
+    const refMatch = id.match(/^(?:ref_msg_idx|msg_idx)=(.+)$/)
+    if (refMatch) return (await this.getMessageIdByRefIdx(data?.bot, refMatch[1])) || id
+    return (await this.getMessageIdByRefIdx(data?.bot, id)) || id
   }
 
   async uploadFileToQQ(data, target_id, target_type, file_data, file_name, force_chunk = false) {
@@ -1867,6 +1957,7 @@ const adapter = new class QQBotAdapter {
           Bot.makeLog('debug', ['发送消息返回', ret], data.self_id)
 
           rets.data.push(ret)
+          this.rememberSentMessageRef(data, ret)
           if (ret.id) rets.message_id.push(ret.id)
           Bot[data.self_id].dau.setDau('send_msg', data)
         } catch (err) {
@@ -1904,10 +1995,15 @@ const adapter = new class QQBotAdapter {
     if (!Array.isArray(message_id)) message_id = [message_id]
     const msgs = []
     for (const i of message_id) {
+      const id = await this.resolveRecallMessageId(data, i)
+      if (!id) {
+        msgs.push(false)
+        continue
+      }
       try {
-        msgs.push(await recall(i))
+        msgs.push(await recall(id))
       } catch (err) {
-        Bot.makeLog('debug', ['撤回消息错误', i, err], data.self_id)
+        Bot.makeLog('debug', ['撤回消息错误', id, err], data.self_id)
         msgs.push(false)
       }
     }
@@ -1915,13 +2011,15 @@ const adapter = new class QQBotAdapter {
   }
 
   recallFriendMsg(data, message_id) {
-    Bot.makeLog('info', `撤回好友消息：[${data.user_id}] ${message_id}`, data.self_id)
-    return this.recallMsg(data, i => data.bot.sdk.recallFriendMessage(data.user_id, i), message_id)
+    const userId = this.stripSelfPrefix(data.self_id, data.user_id)
+    Bot.makeLog('info', `撤回好友消息：[${userId}] ${message_id}`, data.self_id)
+    return this.recallMsg(data, i => data.bot.sdk.recallFriendMessage(userId, i), message_id)
   }
 
   recallGroupMsg(data, message_id) {
-    Bot.makeLog('info', `撤回群消息：[${data.group_id}] ${message_id}`, data.self_id)
-    return this.recallMsg(data, i => data.bot.sdk.recallGroupMessage(data.group_id, i), message_id)
+    const groupId = this.stripSelfPrefix(data.self_id, data.raw_group_id || data.group_id)
+    Bot.makeLog('info', `撤回群消息：[${groupId}] ${message_id}`, data.self_id)
+    return this.recallMsg(data, i => data.bot.sdk.recallGroupMessage(groupId, i), message_id)
   }
 
   recallDirectMsg(data, message_id, hide = config.hideGuildRecall) {
@@ -2290,6 +2388,13 @@ const adapter = new class QQBotAdapter {
       }
     }
 
+    // 提前存储 msg_idx → message_id 映射，避免被后续过滤逻辑跳过
+    const msgIdx = event.msg_idx
+      || event.message_scene?.ext?.find(e => typeof e === 'string' && e.startsWith('msg_idx='))?.slice('msg_idx='.length)
+    if (msgIdx && (event.message_id || event.id)) {
+      this.rememberMessageRef(Bot[id], msgIdx, event.message_id || event.id)
+    }
+
     if (config.filter_bot_msg) {
       // 发送方本身是机器人，直接丢弃
       if (event.author?.bot) return true
@@ -2318,7 +2423,7 @@ const adapter = new class QQBotAdapter {
       post_type: event.post_type,
       message_type: event.message_type,
       sub_type: event.sub_type,
-      message_id: event.message_id,
+      message_id: event.message_id || event.id,
       get unionid() { return this.sender.unionid },
       get openid() { return this.sender.openid },
       get user_id() { return this.sender.user_id },
@@ -2337,6 +2442,23 @@ const adapter = new class QQBotAdapter {
       atall: messageMeta.atall,
       atme: messageMeta.atme,
       atbot: messageMeta.atbot
+    }
+
+    this.rememberReceivedMessageRef(data)
+    data.referenced_message_id = await this.getReferencedMessageId(data)
+    data.source = data.referenced_message_id
+      ? {
+        id: data.referenced_message_id,
+        message_id: data.referenced_message_id,
+        user_id: data.reply_user?.member_openid || data.reply_user?.id || data.reply_user?.user_id || data.reply_user?.openid || '',
+        group_id: data.message_type === 'group' && event.group_id ? `${id}${this.sep}${event.group_id}` : undefined
+      }
+      : undefined
+
+    // 插入 reply segment 供 Yunzai loader 设置 e.reply_id，使 recallReply 等插件可正常撤回引用消息
+    const replyRefId = data.referenced_message_id || data.ref_msg_idx
+    if (replyRefId && !data.message.some(m => m.type === 'reply')) {
+      data.message.unshift({ type: 'reply', id: replyRefId })
     }
 
     for (const i of data.message) {
@@ -2770,7 +2892,30 @@ const adapter = new class QQBotAdapter {
       const { createRequire } = await import('node:module')
       const _require = createRequire(import.meta.url)
       const { MessageBuilder } = _require('qq-official-bot/lib/message/builder.js')
-      const origRegular = sdk.messageService.sendRegularMessage.bind(sdk.messageService)
+      async function sendRegularMessageWithMeta(endpointPath, buildResult, options = {}) {
+        const { data: result } = await this.request.post(endpointPath + '/messages', buildResult.messagePayload, {
+          headers: {
+            'Content-Type': buildResult.contentType
+          },
+          timeout: options.timeout || 10000
+        })
+        if (this.isAuditResult(result)) {
+          return {
+            id: result.message_audit.audit_id,
+            timestamp: Date.now() / 1000,
+            audit_status: 'pending',
+            reason: '',
+            brief: buildResult.brief
+          }
+        }
+        return {
+          id: result.id,
+          timestamp: Date.now() / 1000,
+          brief: buildResult.brief,
+          ext_info: result.ext_info,
+          msg_idx: result.msg_idx
+        }
+      }
       sdk.messageService.sendMessage = async function (endpointPath, message, source, options) {
         const buildResult = await new MessageBuilder(
           this.appid,
@@ -2784,14 +2929,14 @@ const adapter = new class QQBotAdapter {
           buildResult.messagePayload.media = await this.uploadFile(endpointPath, buildResult)
         }
         try {
-          return await origRegular(endpointPath, buildResult, options || {})
+          return await sendRegularMessageWithMeta.call(this, endpointPath, buildResult, options || {})
         } catch (e) {
           const code = e.message?.match(/code\((\d+)\)/)?.[1]
           if (buildResult.messagePayload && ['22007', '40034025', '40034128'].includes(code)) {
             logger.warn(`被动回复失败(code(${code}))，正在尝试通过主动消息发送`)
             delete buildResult.messagePayload.msg_id
             delete buildResult.messagePayload.event_id
-            return await origRegular(endpointPath, buildResult, options || {})
+            return await sendRegularMessageWithMeta.call(this, endpointPath, buildResult, options || {})
           }
           throw e
         }
