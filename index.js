@@ -1997,18 +1997,27 @@ const adapter = new class QQBotAdapter {
     for (const i of message_id) {
       const id = await this.resolveRecallMessageId(data, i)
       if (!id) {
-        msgs.push(false)
+        msgs.push({ ok: false, message_id: id, message: 'msgid不能为空' })
         continue
       }
       try {
         const ret = await recall(id)
         if (ret === false) {
-          Bot.makeLog('warn', ['撤回消息返回 false，SDK 未抛出具体错误', id], data.self_id)
+          const err = new Error('SDK 返回 false，未抛出具体错误')
+          Bot.makeLog('warn', ['撤回消息错误', id, err.message, err], data.self_id)
+          msgs.push({ ok: false, message_id: id, message: err.message })
+          continue
         }
         msgs.push(ret)
       } catch (err) {
         Bot.makeLog('warn', ['撤回消息错误', id, err.message, err.response?.data || err], data.self_id)
-        msgs.push(false)
+        msgs.push({
+          ok: false,
+          message_id: id,
+          code: err.response?.data?.err_code || err.response?.data?.code,
+          message: err.response?.data?.message || err.message || '撤回失败',
+          error: err.response?.data || { message: err.message }
+        })
       }
     }
     return msgs
