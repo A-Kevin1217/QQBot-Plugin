@@ -2008,7 +2008,7 @@ const adapter = new class QQBotAdapter {
           msgs.push({ ok: false, message_id: id, message: err.message })
           continue
         }
-        msgs.push(ret)
+        msgs.push({ ok: true, message_id: id, data: ret })
       } catch (err) {
         Bot.makeLog('warn', ['撤回消息错误', id, err.message, err.response?.data || err], data.self_id)
         msgs.push({
