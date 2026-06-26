@@ -2001,9 +2001,13 @@ const adapter = new class QQBotAdapter {
         continue
       }
       try {
-        msgs.push(await recall(id))
+        const ret = await recall(id)
+        if (ret === false) {
+          Bot.makeLog('warn', ['撤回消息返回 false，SDK 未抛出具体错误', id], data.self_id)
+        }
+        msgs.push(ret)
       } catch (err) {
-        Bot.makeLog('debug', ['撤回消息错误', id, err.message, err.response?.data || err], data.self_id)
+        Bot.makeLog('warn', ['撤回消息错误', id, err.message, err.response?.data || err], data.self_id)
         msgs.push(false)
       }
     }
