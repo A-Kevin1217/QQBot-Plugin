@@ -2003,7 +2003,7 @@ const adapter = new class QQBotAdapter {
       try {
         msgs.push(await recall(id))
       } catch (err) {
-        Bot.makeLog('debug', ['撤回消息错误', id, err], data.self_id)
+        Bot.makeLog('debug', ['撤回消息错误', id, err.message, err.response?.data || err], data.self_id)
         msgs.push(false)
       }
     }
