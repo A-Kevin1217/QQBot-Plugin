@@ -690,6 +690,18 @@ const adapter = new class QQBotAdapter {
       }
     }
 
+    if (config.mdSuffix?.[data.self_id]) {
+      const suffixParts = []
+      for (const i of config.mdSuffix[data.self_id]) {
+        if (data.group_id) data.group = data.bot.pickGroup(data.group_id)
+        if (data.user_id) data.friend = data.bot.pickFriend(data.user_id)
+        if (data.user_id && data.group_id) data.member = data.bot.pickMember(data.group_id, data.user_id)
+        const value = getMustacheTemplating(i.values[0], { e: data })
+        if (value) suffixParts.push(value)
+      }
+      if (suffixParts.length && content) content += '\r' + suffixParts.join('\r')
+    }
+
     if (content) { messages.unshift([{ type: 'markdown', content }]) }
 
     if (button.length) {
