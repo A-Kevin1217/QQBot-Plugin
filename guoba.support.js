@@ -1,4 +1,5 @@
-import { config, configSave, refConfig } from './Model/config.js'
+import { config, configSave } from './Model/config.js'
+import fs from 'node:fs'
 import YAML from 'yaml'
 
 const get = (obj, field) => {
@@ -33,8 +34,6 @@ export function supportGuoba() {
     configInfo: {
       schemas,
       getConfigData() {
-        // 重新读取最新配置
-        try { refConfig() } catch (e) {}
         const c = { ...config }
 
         // 将对象类型的字段序列化为 JSON 字符串，供 Input 组件显示
@@ -120,9 +119,6 @@ export function supportGuoba() {
       },
       setConfigData(data, { Result }) {
         try {
-          // 复制当前配置作为基础
-          const merged = { ...config }
-
           // 将 JSON 字符串字段还原为对象
           const jsonFields = ['filterLog']
           for (const f of jsonFields) {
@@ -137,83 +133,94 @@ export function supportGuoba() {
             }
           }
 
+          // 遍历所有 schema 中的简单字段，直接写入 config
+          for (const schema of schemas) {
+            if (!schema.field) continue
+            // 跳过需要特殊转换的 GSubForm 字段和嵌套对象字段
+            const skipFields = ['mdSuffix', 'btnSuffix', 'markdown', 'customMD', 'rawButton', 'filterLog']
+            if (skipFields.includes(schema.field)) continue
+            if (schema.field.startsWith('imgBed.') || schema.field.startsWith('bot.')) continue
+            const value = get(data, schema.field)
+            if (value !== undefined) set(config, schema.field, value)
+          }
+
           // markdown: [{ botId, templateId }] → { bot_id: template_id }
           const markdownData = Array.isArray(data.markdown) ? data.markdown : []
-          const markdown = {}
+          config.markdown = {}
           for (const row of markdownData) {
             const botId = String(row.botId || '').trim()
             if (!botId) continue
-            markdown[botId] = String(row.templateId || 'raw')
+            config.markdown[botId] = String(row.templateId || 'raw')
           }
-          data.markdown = markdown
 
           // customMD: [{ botId, customTemplateId, keys }] → { bot_id: { custom_template_id, keys } }
           const customMDData = Array.isArray(data.customMD) ? data.customMD : []
-          const customMD = {}
+          config.customMD = {}
           for (const row of customMDData) {
             const botId = String(row.botId || '').trim()
             if (!botId) continue
-            customMD[botId] = {
+            config.customMD[botId] = {
               custom_template_id: String(row.customTemplateId || ''),
               keys: String(row.keys || '').split(/[,，]/).map(s => s.trim()).filter(Boolean)
             }
           }
-          data.customMD = customMD
 
           // rawButton: [{ botId, enabled }] → { bot_id: true/false }
           const rawButtonData = Array.isArray(data.rawButton) ? data.rawButton : []
-          const rawButton = {}
+          config.rawButton = {}
           for (const row of rawButtonData) {
             const botId = String(row.botId || '').trim()
             if (!botId) continue
-            rawButton[botId] = !!row.enabled
-          }
-          data.rawButton = rawButton
-
-          // 遍历所有 schema 中的字段，从 data 中提取并写入（跳过 GSubForm 字段）
-          for (const schema of schemas) {
-            if (!schema.field) continue
-            if (schema.field === 'mdSuffix' || schema.field === 'btnSuffix' || schema.field === 'markdown' || schema.field === 'customMD' || schema.field === 'rawButton') continue
-            const value = get(data, schema.field)
-            if (value !== undefined) set(merged, schema.field, value)
+            config.rawButton[botId] = !!row.enabled
           }
 
           // mdSuffix: [{ botId, value }] → { bot_id: [{ key, values }] }
           const mdSuffixData = Array.isArray(data.mdSuffix) ? data.mdSuffix : []
-          const mdSuffix = {}
+          config.mdSuffix = {}
           let mdKeyIdx = 0
           for (const row of mdSuffixData) {
             const botId = String(row.botId || '').trim()
             const value = String(row.value || '')
             if (!botId || !value) continue
-            if (!mdSuffix[botId]) mdSuffix[botId] = []
-            mdSuffix[botId].push({ key: `suffix_${mdKeyIdx++}`, values: [value] })
+            if (!config.mdSuffix[botId]) config.mdSuffix[botId] = []
+            config.mdSuffix[botId].push({ key: `suffix_${mdKeyIdx++}`, values: [value] })
           }
-          merged.mdSuffix = mdSuffix
 
           // btnSuffix: [{ botId, position, text, type, data }] → { bot_id: { position, values } }
           const btnSuffixData = Array.isArray(data.btnSuffix) ? data.btnSuffix : []
-          const btnSuffix = {}
+          config.btnSuffix = {}
           for (const row of btnSuffixData) {
             const botId = String(row.botId || '').trim()
             if (!botId) continue
-            if (!btnSuffix[botId]) {
-              btnSuffix[botId] = { position: row.position || 1, values: [] }
+            if (!config.btnSuffix[botId]) {
+              config.btnSuffix[botId] = { position: row.position || 1, values: [] }
             }
             const btn = { text: row.text || '' }
             if (row.type === 'callback') btn.callback = row.data || ''
             else if (row.type === 'link') btn.link = row.data || ''
             else btn.input = row.data || ''
-            btnSuffix[botId].values.push(btn)
-          }
-          merged.btnSuffix = btnSuffix
-
-          // 回写到 config 对象
-          for (const key of Object.keys(merged)) {
-            config[key] = merged[key]
+            config.btnSuffix[botId].values.push(btn)
           }
 
-          configSave()
+          // filterLog
+          config.filterLog = data.filterLog || {}
+
+          // imgBed 嵌套字段
+          const imgBedFields = schemas.filter(s => s.field && s.field.startsWith('imgBed.'))
+          for (const schema of imgBedFields) {
+            const value = get(data, schema.field)
+            if (value !== undefined) set(config, schema.field, value)
+          }
+
+          // bot 嵌套字段
+          const botFields = schemas.filter(s => s.field && s.field.startsWith('bot.'))
+          for (const schema of botFields) {
+            const value = get(data, schema.field)
+            if (value !== undefined) set(config, schema.field, value)
+          }
+
+          // 直接写 YAML 文件，不依赖 configSave（其闭包引用的 config 对象在 refConfig 后会失效）
+          fs.writeFileSync('config/QQBot.yaml', YAML.stringify(config), 'utf8')
           return Result.ok({}, '保存成功~')
         } catch (error) {
           logger.error(`[QQBot-Plugin] 保存配置失败: ${error.message}`)
