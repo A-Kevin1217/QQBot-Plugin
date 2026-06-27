@@ -36,6 +36,86 @@ export function supportGuoba() {
         // 重新读取最新配置
         try { refConfig() } catch (e) {}
         const c = { ...config }
+
+        // 将对象类型的字段序列化为 JSON 字符串，供 Input 组件显示
+        const jsonFields = ['filterLog']
+        for (const f of jsonFields) {
+          if (c[f] && typeof c[f] === 'object') {
+            try {
+              c[f] = JSON.stringify(c[f], null, 2)
+            } catch {}
+          }
+        }
+
+        // markdown: { bot_id: template_id } → [{ botId, templateId }]
+        const markdownRows = []
+        if (c.markdown && typeof c.markdown === 'object') {
+          for (const [botId, templateId] of Object.entries(c.markdown)) {
+            markdownRows.push({ botId, templateId: String(templateId || '') })
+          }
+        }
+        c.markdown = markdownRows
+
+        // customMD: { bot_id: { custom_template_id, keys } } → [{ botId, customTemplateId, keys }]
+        const customMDRows = []
+        if (c.customMD && typeof c.customMD === 'object') {
+          for (const [botId, cfg] of Object.entries(c.customMD)) {
+            if (!cfg || typeof cfg !== 'object') continue
+            customMDRows.push({
+              botId,
+              customTemplateId: cfg.custom_template_id || '',
+              keys: Array.isArray(cfg.keys) ? cfg.keys.join(', ') : ''
+            })
+          }
+        }
+        c.customMD = customMDRows
+
+        // rawButton: { bot_id: true/false } → [{ botId, enabled }]
+        const rawButtonRows = []
+        if (c.rawButton && typeof c.rawButton === 'object') {
+          for (const [botId, enabled] of Object.entries(c.rawButton)) {
+            rawButtonRows.push({ botId, enabled: !!enabled })
+          }
+        }
+        c.rawButton = rawButtonRows
+
+        // bot.sandbox 作为 Switch 需要布尔值，确保类型正确
+        if (c.bot && typeof c.bot === 'object') {
+          c.bot = { ...c.bot }
+        }
+
+        // mdSuffix: { bot_id: [{ key, values }] } → [{ botId, value }]
+        const mdSuffixRows = []
+        if (c.mdSuffix && typeof c.mdSuffix === 'object') {
+          for (const [botId, items] of Object.entries(c.mdSuffix)) {
+            if (!Array.isArray(items)) continue
+            for (const item of items) {
+              const val = Array.isArray(item.values) ? (item.values[0] || '') : ''
+              mdSuffixRows.push({ botId, value: val })
+            }
+          }
+        }
+        c.mdSuffix = mdSuffixRows
+
+        // btnSuffix: { bot_id: { position, values } } → [{ botId, position, text, type, data }]
+        const btnSuffixRows = []
+        if (c.btnSuffix && typeof c.btnSuffix === 'object') {
+          for (const [botId, botBtnCfg] of Object.entries(c.btnSuffix)) {
+            const pos = botBtnCfg.position || 1
+            const values = Array.isArray(botBtnCfg.values) ? botBtnCfg.values : []
+            for (const btn of values) {
+              btnSuffixRows.push({
+                botId,
+                position: pos,
+                text: btn.text || '',
+                type: btn.type || btn.callback ? 'callback' : btn.link ? 'link' : 'input',
+                data: btn.callback || btn.link || btn.input || '',
+              })
+            }
+          }
+        }
+        c.btnSuffix = btnSuffixRows
+
         return c
       },
       setConfigData(data, { Result }) {
@@ -43,12 +123,90 @@ export function supportGuoba() {
           // 复制当前配置作为基础
           const merged = { ...config }
 
-          // 遍历所有 schema 中的字段，从 data 中提取并写入
+          // 将 JSON 字符串字段还原为对象
+          const jsonFields = ['filterLog']
+          for (const f of jsonFields) {
+            if (typeof data[f] === 'string' && data[f].trim()) {
+              try {
+                data[f] = JSON.parse(data[f])
+              } catch {
+                return Result.error(`${f} 的 JSON 格式不正确，请检查`)
+              }
+            } else if (!data[f] || (typeof data[f] === 'string' && !data[f].trim())) {
+              data[f] = {}
+            }
+          }
+
+          // markdown: [{ botId, templateId }] → { bot_id: template_id }
+          const markdownData = Array.isArray(data.markdown) ? data.markdown : []
+          const markdown = {}
+          for (const row of markdownData) {
+            const botId = String(row.botId || '').trim()
+            if (!botId) continue
+            markdown[botId] = String(row.templateId || 'raw')
+          }
+          data.markdown = markdown
+
+          // customMD: [{ botId, customTemplateId, keys }] → { bot_id: { custom_template_id, keys } }
+          const customMDData = Array.isArray(data.customMD) ? data.customMD : []
+          const customMD = {}
+          for (const row of customMDData) {
+            const botId = String(row.botId || '').trim()
+            if (!botId) continue
+            customMD[botId] = {
+              custom_template_id: String(row.customTemplateId || ''),
+              keys: String(row.keys || '').split(/[,，]/).map(s => s.trim()).filter(Boolean)
+            }
+          }
+          data.customMD = customMD
+
+          // rawButton: [{ botId, enabled }] → { bot_id: true/false }
+          const rawButtonData = Array.isArray(data.rawButton) ? data.rawButton : []
+          const rawButton = {}
+          for (const row of rawButtonData) {
+            const botId = String(row.botId || '').trim()
+            if (!botId) continue
+            rawButton[botId] = !!row.enabled
+          }
+          data.rawButton = rawButton
+
+          // 遍历所有 schema 中的字段，从 data 中提取并写入（跳过 GSubForm 字段）
           for (const schema of schemas) {
             if (!schema.field) continue
+            if (schema.field === 'mdSuffix' || schema.field === 'btnSuffix' || schema.field === 'markdown' || schema.field === 'customMD' || schema.field === 'rawButton') continue
             const value = get(data, schema.field)
             if (value !== undefined) set(merged, schema.field, value)
           }
+
+          // mdSuffix: [{ botId, value }] → { bot_id: [{ key, values }] }
+          const mdSuffixData = Array.isArray(data.mdSuffix) ? data.mdSuffix : []
+          const mdSuffix = {}
+          let mdKeyIdx = 0
+          for (const row of mdSuffixData) {
+            const botId = String(row.botId || '').trim()
+            const value = String(row.value || '')
+            if (!botId || !value) continue
+            if (!mdSuffix[botId]) mdSuffix[botId] = []
+            mdSuffix[botId].push({ key: `suffix_${mdKeyIdx++}`, values: [value] })
+          }
+          merged.mdSuffix = mdSuffix
+
+          // btnSuffix: [{ botId, position, text, type, data }] → { bot_id: { position, values } }
+          const btnSuffixData = Array.isArray(data.btnSuffix) ? data.btnSuffix : []
+          const btnSuffix = {}
+          for (const row of btnSuffixData) {
+            const botId = String(row.botId || '').trim()
+            if (!botId) continue
+            if (!btnSuffix[botId]) {
+              btnSuffix[botId] = { position: row.position || 1, values: [] }
+            }
+            const btn = { text: row.text || '' }
+            if (row.type === 'callback') btn.callback = row.data || ''
+            else if (row.type === 'link') btn.link = row.data || ''
+            else btn.input = row.data || ''
+            btnSuffix[botId].values.push(btn)
+          }
+          merged.btnSuffix = btnSuffix
 
           // 回写到 config 对象
           for (const key of Object.keys(merged)) {
@@ -69,13 +227,6 @@ export function supportGuoba() {
 const schemas = [
   // ========== 基本设置 ==========
   { label: '基本设置', component: 'SOFT_GROUP_BEGIN' },
-  {
-    field: 'tips',
-    label: '欢迎提示',
-    bottomHelpMessage: '插件加载时的提示信息，留空不显示',
-    component: 'Input',
-    componentProps: { type: 'textarea', rows: 2 },
-  },
   {
     field: 'permission',
     label: '权限等级',
@@ -119,9 +270,8 @@ const schemas = [
   {
     field: 'toQRCode',
     label: '链接转二维码',
-    bottomHelpMessage: 'false 关闭；true 开启（匹配所有链接）；可填写正则表达式自定义匹配',
-    component: 'Input',
-    componentProps: { placeholder: 'false / true / 正则表达式' },
+    bottomHelpMessage: '开启后消息中的链接会转为二维码。如需自定义匹配正则，请直接编辑 config/QQBot.yaml',
+    component: 'Switch',
   },
   {
     field: 'toCallback',
@@ -166,9 +316,27 @@ const schemas = [
   {
     field: 'markdown',
     label: 'Markdown 模板',
-    bottomHelpMessage: 'per self_id 的 markdown 模板 ID 或 "raw" 使用原生 markdown',
-    component: 'Input',
-    componentProps: { placeholder: '{"bot_id": "模板ID 或 raw"}' },
+    bottomHelpMessage: '为每个机器人设置 markdown 模板 ID，raw 表示使用原生 markdown',
+    component: 'GSubForm',
+    componentProps: {
+      multiple: true,
+      schemas: [
+        {
+          field: 'botId',
+          label: 'Bot ID',
+          required: true,
+          component: 'Input',
+          componentProps: { placeholder: '机器人的 self_id / appid' },
+        },
+        {
+          field: 'templateId',
+          label: '模板 ID',
+          required: true,
+          component: 'Input',
+          componentProps: { placeholder: '模板ID 或 raw（原生markdown）' },
+        },
+      ],
+    },
   },
   {
     field: 'sendButton',
@@ -179,16 +347,57 @@ const schemas = [
   {
     field: 'customMD',
     label: '自定义模板配置',
-    bottomHelpMessage: '自定义 markdown 模板的 keys 配置',
-    component: 'Input',
-    componentProps: { type: 'textarea', rows: 2, placeholder: '{"bot_id": {"custom_template_id": "", "keys": []}}' },
+    bottomHelpMessage: '自定义 markdown 模板的 custom_template_id 和 keys',
+    component: 'GSubForm',
+    componentProps: {
+      multiple: true,
+      schemas: [
+        {
+          field: 'botId',
+          label: 'Bot ID',
+          required: true,
+          component: 'Input',
+          componentProps: { placeholder: '机器人的 self_id / appid' },
+        },
+        {
+          field: 'customTemplateId',
+          label: '模板 ID',
+          required: true,
+          component: 'Input',
+          componentProps: { placeholder: 'custom_template_id' },
+        },
+        {
+          field: 'keys',
+          label: '模板 Keys',
+          bottomHelpMessage: '用逗号分隔多个 key',
+          component: 'Input',
+          componentProps: { placeholder: 'key1, key2, key3' },
+        },
+      ],
+    },
   },
   {
     field: 'rawButton',
     label: '使用原始按钮',
     bottomHelpMessage: 'per self_id 是否使用原始按钮格式',
-    component: 'Input',
-    componentProps: { placeholder: '{"bot_id": true}' },
+    component: 'GSubForm',
+    componentProps: {
+      multiple: true,
+      schemas: [
+        {
+          field: 'botId',
+          label: 'Bot ID',
+          required: true,
+          component: 'Input',
+          componentProps: { placeholder: '机器人的 self_id / appid' },
+        },
+        {
+          field: 'enabled',
+          label: '启用原始按钮',
+          component: 'Switch',
+        },
+      ],
+    },
   },
   {
     field: 'markdownImgScale',
@@ -216,7 +425,7 @@ const schemas = [
   {
     field: 'mdSuffix',
     label: 'Markdown 文本小尾巴',
-    bottomHelpMessage: '在每条 Markdown 消息末尾追加自定义文本，支持 {{e.xxx}} 模板语法',
+    bottomHelpMessage: '在每条消息末尾追加文本。Bot ID 填 appid（如 123456789）。内容支持变量：{{e.bot?.nickname}} 机器人昵称、{{e.group?.name}} 群名、{{e.user_id}} 发送者QQ。多条按顺序换行拼接。',
     component: 'GSubForm',
     componentProps: {
       multiple: true,
@@ -226,14 +435,7 @@ const schemas = [
           label: 'Bot ID',
           required: true,
           component: 'Input',
-          componentProps: { placeholder: '机器人的 self_id / appid' },
-        },
-        {
-          field: 'key',
-          label: '参数 Key',
-          required: true,
-          component: 'Input',
-          componentProps: { placeholder: '参数键名，如 suffix' },
+          componentProps: { placeholder: '机器人的 appid，如 123456789' },
         },
         {
           field: 'value',
@@ -243,7 +445,7 @@ const schemas = [
           componentProps: {
             type: 'textarea',
             rows: 3,
-            placeholder: '支持 {{e.xxx}} 模板语法，如：---\\r来自 {{e.bot?.nickname}}',
+            placeholder: '每行一条，支持模板变量，例如：\n---\n来自 {{e.bot?.nickname}}\n当前群：{{e.group?.name}}',
           },
         },
       ],
@@ -252,7 +454,7 @@ const schemas = [
   {
     field: 'btnSuffix',
     label: '按钮小尾巴',
-    bottomHelpMessage: '在 Markdown 消息的按钮列表中插入自定义按钮',
+    bottomHelpMessage: '在 Markdown 消息的按钮列表中插入自定义按钮。位置从 1 开始计数。',
     component: 'GSubForm',
     componentProps: {
       multiple: true,
@@ -262,21 +464,21 @@ const schemas = [
           label: 'Bot ID',
           required: true,
           component: 'Input',
-          componentProps: { placeholder: '机器人的 self_id / appid' },
+          componentProps: { placeholder: '机器人的 QQ号' },
         },
         {
           field: 'position',
           label: '插入位置',
           required: true,
           component: 'InputNumber',
-          componentProps: { min: 1, max: 5, placeholder: '1-5，按钮插入的位置' },
+          componentProps: { min: 1, max: 5 },
         },
         {
           field: 'text',
-          label: '按钮文本',
+          label: '按钮文字',
           required: true,
           component: 'Input',
-          componentProps: { placeholder: '按钮显示文字' },
+          componentProps: { placeholder: '显示的文字' },
         },
         {
           field: 'type',
@@ -293,8 +495,9 @@ const schemas = [
         {
           field: 'data',
           label: '按钮数据',
+          bottomHelpMessage: '回调按钮填命令，链接按钮填 URL，输入按钮填输入内容',
           component: 'Input',
-          componentProps: { placeholder: '回调数据 / 链接地址 / 输入内容' },
+          componentProps: { placeholder: '回调命令 / 链接地址 / 输入内容' },
         },
       ],
     },
@@ -338,7 +541,7 @@ const schemas = [
   },
   {
     field: 'imgBed.default',
-    label: '默认图床',
+    label: '兜底返回图',
     bottomHelpMessage: '默认使用的图床类型',
     component: 'Select',
     componentProps: {
