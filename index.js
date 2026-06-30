@@ -74,6 +74,25 @@ function normalizeReplySegment(i) {
   return { ...i, id: idText }
 }
 
+function normalizeEventId(id) {
+  if (id == null || id === '') return ''
+  return String(id).replace(/^event_/, '')
+}
+
+function pickCallbackEventId(...ids) {
+  for (const id of ids) {
+    if (id == null || id === '') continue
+    const text = normalizeEventId(id)
+    if (text.startsWith('INTERACTION_CREATE:')) return text
+  }
+  for (const id of ids) {
+    if (id == null || id === '') continue
+    const text = normalizeEventId(id)
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text)) return `INTERACTION_CREATE:${text}`
+  }
+  return ''
+}
+
 function normalizeGroupMemberRole(role) {
   const value = String(role ?? '').trim().toLowerCase()
   if (/(^|_)owner$/.test(value)) return 'owner'
@@ -1270,9 +1289,22 @@ const adapter = new class QQBotAdapter {
 
   sendFriendMsg(data, msg, event) {
     if (!event) event = {}
+    if (!event.event_id) delete event.event_id
     if (!event.event_id && data.self_id && data.user_id) {
-      const cachedEventId = this.callbackEventCache.get(`${data.self_id}:${data.user_id}`)
-      if (cachedEventId) event.event_id = cachedEventId
+      const userId = this.stripSelfPrefix(data.self_id, data.user_id)
+      const currentCallbackEventId = data.bot?.callbackEvent?.user?.[userId]
+      const cachedEventId = this.callbackEventCache.get(`${data.self_id}:user:${userId}`)
+        || this.callbackEventCache.get(`${data.self_id}:${userId}`)
+      const dataEventId = pickCallbackEventId(
+        data.callback_event_id,
+        data.notice_id,
+        data.raw?.notice_id,
+        data.raw?.event_id,
+        data.raw?.raw?.id,
+        data.raw_event?.id,
+        data.event_id
+      )
+      event.event_id = cachedEventId || currentCallbackEventId || dataEventId
     }
     if (data.smallbtn) event.smallbtn = true
     if (data.stream === undefined) data.stream = config.stream
@@ -1288,9 +1320,22 @@ const adapter = new class QQBotAdapter {
 
   async sendGroupMsg(data, msg, event) {
     if (!event) event = {}
+    if (!event.event_id) delete event.event_id
     if (!event.event_id && data.self_id && data.group_id) {
-      const cachedEventId = this.callbackEventCache.get(`${data.self_id}:${data.group_id}`)
-      if (cachedEventId) event.event_id = cachedEventId
+      const groupId = this.stripSelfPrefix(data.self_id, data.group_id)
+      const currentCallbackEventId = data.bot?.callbackEvent?.group?.[groupId]
+      const cachedEventId = this.callbackEventCache.get(`${data.self_id}:group:${groupId}`)
+        || this.callbackEventCache.get(`${data.self_id}:${groupId}`)
+      const dataEventId = pickCallbackEventId(
+        data.callback_event_id,
+        data.notice_id,
+        data.raw?.notice_id,
+        data.raw?.event_id,
+        data.raw?.raw?.id,
+        data.raw_event?.id,
+        data.event_id
+      )
+      event.event_id = cachedEventId || currentCallbackEventId || dataEventId
     }
     if (data.smallbtn) event.smallbtn = true
 
@@ -2560,9 +2605,28 @@ const adapter = new class QQBotAdapter {
     if ([2001, 2002].includes(event.data?.type)) return
 
     const user = await Bot[id].fl.get(`${id}${this.sep}${event.operator_id}`)
+    const callbackBot = Bot[id]
+    if (!callbackBot.callbackEvent) callbackBot.callbackEvent = { user: {}, group: {} }
     const interactionEventId = event.notice_id?.startsWith?.('INTERACTION_CREATE:')
       ? event.notice_id
       : `INTERACTION_CREATE:${event.notice_id}`
+
+    if (event.operator_id) {
+      callbackBot.callbackEvent.user[event.operator_id] = interactionEventId
+      this.callbackEventCache.set(`${id}:user:${event.operator_id}`, interactionEventId)
+      setTimeout(() => {
+        delete callbackBot.callbackEvent.user[event.operator_id]
+        this.callbackEventCache.delete(`${id}:user:${event.operator_id}`)
+      }, 60 * 60 * 1000)
+    }
+    if (event.group_id) {
+      callbackBot.callbackEvent.group[event.group_id] = interactionEventId
+      this.callbackEventCache.set(`${id}:group:${event.group_id}`, interactionEventId)
+      setTimeout(() => {
+        delete callbackBot.callbackEvent.group[event.group_id]
+        this.callbackEventCache.delete(`${id}:group:${event.group_id}`)
+      }, 5 * 60 * 1000)
+    }
 
     const data = {
       event_id: event.event_id,
@@ -2571,6 +2635,8 @@ const adapter = new class QQBotAdapter {
       bot: Bot[id],
       self_id: id,
       post_type: 'message',
+      notice_id: event.notice_id,
+      callback_event_id: interactionEventId,
       message_id: event.event_id ? `event_${event.event_id}` : event.notice_id || '',
       message_type: event.notice_type,
       sub_type: 'callback',
@@ -2610,7 +2676,7 @@ const adapter = new class QQBotAdapter {
 
     const wrapWithEventId = (msg) => {
       msg = Array.isArray(msg) ? [...msg] : [msg]
-      msg.unshift({ type: 'reply', event_id: interactionEventId })
+      msg.unshift({ type: 'reply', id: `event_${interactionEventId}` })
       return msg
     }
 
@@ -2622,9 +2688,15 @@ const adapter = new class QQBotAdapter {
         data.reply = msg => this.sendFriendMsg(
           { ...data, user_id: event.operator_id },
           wrapWithEventId(msg),
-          { event_id: interactionEventId }
+          { event_id: `event_${interactionEventId}` }
         )
         await this.setFriendMap(data)
+        callbackBot.callbackEvent.user[event.operator_id] = interactionEventId
+        this.callbackEventCache.set(`${id}:user:${event.operator_id}`, interactionEventId)
+        setTimeout(() => {
+          delete callbackBot.callbackEvent.user[event.operator_id]
+          this.callbackEventCache.delete(`${id}:user:${event.operator_id}`)
+        }, 60 * 60 * 1000)
         break
       case 'group':
         data.group_id = `${id}${this.sep}${event.group_id}`
@@ -2632,14 +2704,18 @@ const adapter = new class QQBotAdapter {
         data.reply = msg => this.sendGroupMsg(
           { ...data, group_id: event.group_id },
           wrapWithEventId(msg),
-          { event_id: interactionEventId }
+          { event_id: `event_${interactionEventId}` }
         )
         await this.setGroupMap(data)
-        this.callbackEventCache.set(`${id}:${event.group_id}`, interactionEventId)
-        this.callbackEventCache.set(`${id}:${event.operator_id}`, interactionEventId)
+        callbackBot.callbackEvent.group[event.group_id] = interactionEventId
+        callbackBot.callbackEvent.user[event.operator_id] = interactionEventId
+        this.callbackEventCache.set(`${id}:group:${event.group_id}`, interactionEventId)
+        this.callbackEventCache.set(`${id}:user:${event.operator_id}`, interactionEventId)
         setTimeout(() => {
-          this.callbackEventCache.delete(`${id}:${event.group_id}`)
-          this.callbackEventCache.delete(`${id}:${event.operator_id}`)
+          delete callbackBot.callbackEvent.group[event.group_id]
+          delete callbackBot.callbackEvent.user[event.operator_id]
+          this.callbackEventCache.delete(`${id}:group:${event.group_id}`)
+          this.callbackEventCache.delete(`${id}:user:${event.operator_id}`)
         }, 5 * 60 * 1000)
         break
       case 'guild':
@@ -2957,6 +3033,17 @@ const adapter = new class QQBotAdapter {
           return await sendRegularMessageWithMeta.call(this, endpointPath, buildResult, options || {})
         } catch (e) {
           const code = e.message?.match(/code\((\d+)\)/)?.[1]
+          const eventId = buildResult.messagePayload?.event_id
+          if (code === '40034105' && eventId?.startsWith?.('INTERACTION_CREATE:')) {
+            const retryBuildResult = {
+              ...buildResult,
+              messagePayload: {
+                ...buildResult.messagePayload,
+                event_id: eventId.replace(/^INTERACTION_CREATE:/, '')
+              }
+            }
+            return await sendRegularMessageWithMeta.call(this, endpointPath, retryBuildResult, options || {})
+          }
           if (buildResult.messagePayload && ['22007', '40034025', '40034128'].includes(code)) {
             logger.warn(`被动回复失败(code(${code}))，正在尝试通过主动消息发送`)
             delete buildResult.messagePayload.msg_id
