@@ -3453,22 +3453,42 @@ export class QQBotAdapter extends plugin {
   }
 
   async callStat() {
-    if (!config.callStats) return false
+    if (!config.callStats) {
+      return this.reply([
+        '调用统计未开启，请先开启后再查看。',
+        segment.button([
+          { text: '开启调用统计', callback: '#QQBot设置调用统计开启', permission: this.e.user_id }
+        ])
+      ], true)
+    }
     const dau = this.e.bot.dau
-    if (!dau || !dau.dauDB) return false
+    if (!dau || !dau.dauDB) {
+      return this.reply('DAU 数据库未启用，无法查看调用统计。', true)
+    }
     const msg = dau.getCallStatsMsg(this.e)
-    if (msg.length) this.reply(msg, true)
+    if (msg.length) return this.reply(msg, true)
+    return this.reply('暂无调用统计数据。', true)
   }
 
   async userStat() {
-    if (!config.userStats) return false
+    if (!config.userStats) {
+      return this.reply([
+        '用户统计未开启，请先开启后再查看。',
+        segment.button([
+          { text: '开启用户统计', callback: '#QQBot设置用户统计开启', permission: this.e.user_id }
+        ])
+      ], true)
+    }
     const dau = this.e.bot.dau
-    if (!dau || !dau.dauDB) return false
+    if (!dau || !dau.dauDB) {
+      return this.reply('DAU 数据库未启用，无法查看用户统计。', true)
+    }
     if (dau.dauDB === 'redis') {
-      return this.reply('用户统计只适配了level,,,', true)
+      return this.reply('用户统计只适配 level 数据库，请将 dauDB 设置为 level 后再查看。', true)
     }
     const msg = await dau.getUserStatsMsg(this.e)
-    if (msg.length) this.reply(msg, true)
+    if (msg.length) return this.reply(msg, true)
+    return this.reply('暂无用户统计数据。', true)
   }
 
   async imageBedStat() {
