@@ -93,6 +93,11 @@ function pickCallbackEventId(...ids) {
   return ''
 }
 
+function normalizeSendEvent(event) {
+  if (!event || (typeof event !== 'object' && typeof event !== 'function')) return {}
+  return event
+}
+
 function normalizeGroupMemberRole(role) {
   const value = String(role ?? '').trim().toLowerCase()
   if (/(^|_)owner$/.test(value)) return 'owner'
@@ -1288,7 +1293,7 @@ const adapter = new class QQBotAdapter {
   }
 
   sendFriendMsg(data, msg, event) {
-    if (!event) event = {}
+    event = normalizeSendEvent(event)
     if (!event.event_id) delete event.event_id
     if (!event.event_id && data.self_id && data.user_id) {
       const userId = this.stripSelfPrefix(data.self_id, data.user_id)
@@ -1319,7 +1324,7 @@ const adapter = new class QQBotAdapter {
   }
 
   async sendGroupMsg(data, msg, event) {
-    if (!event) event = {}
+    event = normalizeSendEvent(event)
     if (!event.event_id) delete event.event_id
     if (!event.event_id && data.self_id && data.group_id) {
       const groupId = this.stripSelfPrefix(data.self_id, data.group_id)

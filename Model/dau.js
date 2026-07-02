@@ -158,21 +158,31 @@ export default class Dau {
       msg.push(...[yesterdayDau.time, ...this.toDauMsg(yesterdayDau, 6), ''])
     } catch (error) { }
 
+    const historyDau = fs.existsSync(path)
+      ? fs.readdirSync(path)
+        .filter(v => v.endsWith('.json'))
+        .flatMap(v => {
+          try {
+            const data = JSON.parse(fs.readFileSync(join(path, v), 'utf8'))
+            return Array.isArray(data) ? data : []
+          } catch (error) {
+            return []
+          }
+        })
+        .filter(v => v?.time && moment(v.time).isValid())
+        .sort((a, b) => moment(a.time).valueOf() - moment(b.time).valueOf())
+      : []
+    const days30 = historyDau.slice(-30)
+
     // 最近30天平均
     let totalDAU = _.reduce(_.keys(dauAttr), (acc, key) => {
       acc[key] = 0
       return acc
     }, {})
-    let days = 0
-    try {
-      let days30 = [yearMonth, moment(yearMonth).subtract(1, 'm').format('YYYY-MM')]
-      days30 = _(days30).map(v => {
-        let file = join(path, `${v}.json`)
-        return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).reverse() : []
-      }).flatten().take(30).value()
-      days = days30.length
+    let days = days30.length
+    if (days) {
       totalDAU = _.mapValues(totalDAU, (v, k) => _.floor(_.meanBy(days30, k)))
-    } catch (error) { }
+    }
 
     days = numToChinese[days] || days
     msg.push(...[`最近${days}天平均`, ...this.toDauMsg(totalDAU, 4)])
@@ -180,10 +190,8 @@ export default class Dau {
 
     if (pro) {
       if (!fs.existsSync(path)) return false
-      let daus = fs.readdirSync(path)// .reverse().slice(0, 2)
-      if (_.isEmpty(daus)) return false
-      let data = _.fromPairs(daus.map(v => [v.replace('.json', ''), JSON.parse(fs.readFileSync(`${path}/${v}`))]))
-      data = this.monthlyDau(Object.values(data).flat().slice(-30))
+      if (_.isEmpty(days30)) return false
+      let data = this.monthlyDau(days30)
 
       totalDAU.days = days
       const arr = Object.entries(this.call_stats).sort((a, b) => b[1] - a[1])
