@@ -147,6 +147,7 @@ const adapter = new class QQBotAdapter {
     this.sep = ":"
     this.callbackEventCache = new Map()
     this.noticeEventCache = new Set()
+    this.recallMessageCache = new Map()
     if (process.platform === "win32")
       this.sep = ""
     this.bind_user = {}
@@ -2108,6 +2109,20 @@ const adapter = new class QQBotAdapter {
     return this.sendGMsg(data, msg => data.bot.sdk.sendDirectMessage(data.guild_id, adaptSendableForSDK(msg), event), msg)
   }
 
+  #makeRecallDedupeKey(data, messageId) {
+    const target = data?.raw_group_id || data?.group_id || data?.channel_id || data?.guild_id || data?.raw_user_id || data?.user_id || ''
+    return [data?.self_id || '', data?.message_type || data?.notice_type || '', target, messageId].join(':')
+  }
+
+  #markRecallMessage(key, ttl = 30 * 1000) {
+    if (!key) return false
+    if (this.recallMessageCache.has(key)) return false
+    const timer = setTimeout(() => this.recallMessageCache.delete(key), ttl)
+    if (typeof timer.unref === 'function') timer.unref()
+    this.recallMessageCache.set(key, timer)
+    return true
+  }
+
   async recallMsg(data, recall, message_id) {
     if (!Array.isArray(message_id)) message_id = [message_id]
     const msgs = []
@@ -2117,6 +2132,14 @@ const adapter = new class QQBotAdapter {
         msgs.push({ ok: false, message_id: id, message: 'msgid不能为空' })
         continue
       }
+
+      const recallKey = this.#makeRecallDedupeKey(data, id)
+      if (!this.#markRecallMessage(recallKey)) {
+        Bot.makeLog('debug', ['忽略重复撤回消息', id], data.self_id)
+        msgs.push({ ok: true, message_id: id, skipped: true, message: '重复撤回已跳过' })
+        continue
+      }
+
       try {
         const ret = await recall(id)
         if (ret === false) {
