@@ -16,7 +16,11 @@ const BED_ALIAS = {
   'qq频道': 'qqchannel',
   telegraph: 'telegraph',
   tg: 'telegraph',
-  gitcode: 'gitcode',
+  tencentci: 'tencentci',
+  '腾讯云ci': 'tencentci',
+  '腾讯云': 'tencentci',
+  ci: 'tencentci',
+  cosdemo: 'tencentci',
   all: ''
 }
 
@@ -27,7 +31,7 @@ const BED_NAMES = {
   cos: 'COS',
   qqchannel: 'QQ频道',
   telegraph: 'Telegraph',
-  gitcode: 'gitcode',
+  tencentci: '腾讯云CI',
   unknown: '未知图床'
 }
 

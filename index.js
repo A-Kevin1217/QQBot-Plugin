@@ -275,16 +275,47 @@ const adapter = new class QQBotAdapter {
     } catch { }
   }
 
-  async uploadToGitcode(data, buffer) {
-    try {
-      const res = await fetch('https://bot.meml.xyz/api/img/gitcode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ base64: buffer.toString('base64') })
-      })
-      const json = await res.json()
-      if (json.url) return json.url
-    } catch { }
+  async uploadToTencentCI(data, buffer) {
+    const base = 'https://ci-exhibition.cloud.tencent.com'
+    const cosHost = 'https://ci-h5-demo-1258125638.cos.ap-chengdu.myqcloud.com'
+    const ext = this.#detectImageExt(buffer) || 'png'
+    const headers = {
+      Referer: 'https://cloud.tencent.com/act/pro/ciExhibition',
+      Origin: 'https://cloud.tencent.com',
+      'User-Agent': 'Mozilla/5.0'
+    }
+
+    const keyRes = await fetch(`${base}/samples/createUploadKey?${new URLSearchParams({
+      ext,
+      ciProcess: 'sensitive-content-recognition'
+    })}`, { headers })
+    if (!keyRes.ok) throw new Error(`获取腾讯云CI上传凭证失败: ${keyRes.status}`)
+
+    const json = await keyRes.json()
+    const key = json.data?.key
+    const uploadAuthorization = json.data?.uploadAuthorization
+    const ciProcessAuthorization = json.data?.ciProcessAuthorization
+    if (!key || !uploadAuthorization) throw new Error('腾讯云CI上传凭证无效')
+
+    const uploadUrl = `${cosHost}/${String(key).replace(/^\/+/, '')}`
+    const uploadRes = await fetch(uploadUrl, {
+      method: 'PUT',
+      body: buffer,
+      headers: {
+        ...headers,
+        Authorization: uploadAuthorization,
+        'x-cos-storage-class': 'STANDARD',
+        'Content-Type': `image/${ext}`
+      }
+    })
+    if (!uploadRes.ok) throw new Error(`腾讯云CI上传失败: ${uploadRes.status}`)
+
+    if (ciProcessAuthorization) {
+      const reviewUrl = `${uploadUrl}?${ciProcessAuthorization}&ci-process=sensitive-content-recognition&detect-type=porn,terrorist,politics,ads`
+      try { await fetch(reviewUrl, { headers }) } catch { }
+    }
+
+    return uploadUrl
   }
 
   async uploadToCOS(data, buffer) {
@@ -343,6 +374,23 @@ const adapter = new class QQBotAdapter {
     return 'jpg'
   }
 
+  async #setMarkdownImageSizeFromSource(data, image, source, label = '图片') {
+    try {
+      const targetBuffer = Buffer.isBuffer(source) ? source : await Bot.Buffer(source)
+      const size = imageSize(targetBuffer)
+      image.width = size.width
+      image.height = size.height
+      if (image.width && image.height) {
+        image.width = Math.floor(image.width * (config.markdownImgScale || 1))
+        image.height = Math.floor(image.height * (config.markdownImgScale || 1))
+      }
+      return true
+    } catch (err) {
+      Bot.makeLog('error', [`${label}分辨率检测错误`, source, err], data.self_id)
+      return false
+    }
+  }
+
   async uploadToImageBed(data, buffer) {
     if (config.imgBed?.enable === false) return
 
@@ -377,7 +425,7 @@ const adapter = new class QQBotAdapter {
       ['cos', 'COS', !!(config.imgBed?.cos?.createUploadKeyUrl && config.imgBed?.cos?.cosBucketUrlPrefix), () => this.uploadToCOS(data, buffer), true],
       ['qqchannel', 'QQ频道', !!(config.imgBed?.qqchannel?.botQQ && config.imgBed?.qqchannel?.channelId), () => this.uploadToQQChannel(data, buffer), true],
       ['telegraph', 'Telegraph', !!config.imgBed?.telegraph, () => this.uploadToTelegraph(data, buffer), true],
-      ['gitcode', 'gitcode', true, () => this.uploadToGitcode(data, buffer), true]
+      ['tencentci', '腾讯云CI', true, () => this.uploadToTencentCI(data, buffer), true]
     ]
 
     const recordStat = async (record) => {
@@ -419,7 +467,8 @@ const adapter = new class QQBotAdapter {
     }
 
     Bot.makeLog('warn', ['图床上传失败，所有图床均不可用'], data.self_id)
-    return config.imgBed?.default ?? undefined
+    const defaultImageUrl = String(config.imgBed?.default || '').trim()
+    return defaultImageUrl || undefined
   }
 
   async makeMarkdownImage(data, file, summary = '图片') {
@@ -470,7 +519,13 @@ const adapter = new class QQBotAdapter {
 
     if (!image.url?.startsWith?.('http')) {
       const imgBedUrl = await this.uploadToImageBed(data, buffer)
-      if (imgBedUrl) image.url = imgBedUrl
+      if (imgBedUrl) {
+        image.url = imgBedUrl
+        const defaultImageUrl = String(config.imgBed?.default || '').trim()
+        if (defaultImageUrl.startsWith('http') && imgBedUrl === defaultImageUrl) {
+          await this.#setMarkdownImageSizeFromSource(data, image, defaultImageUrl, '备用图片')
+        }
+      }
     }
 
     if (!image.url?.startsWith?.('http') && typeof Bot.imageToUrl === 'function') {
