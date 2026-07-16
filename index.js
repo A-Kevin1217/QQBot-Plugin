@@ -2821,6 +2821,15 @@ const adapter = new class QQBotAdapter {
       setTimeout(() => this.noticeEventCache.delete(noticeEventKey), 5 * 60 * 1000)
     }
 
+    // QQ 官方事件中 group.increase/decrease 表示机器人自身被加群/移出群，
+    // 而 Yunzai/ICQQ 使用这两个事件表示普通成员进退群。为避免语义冲突，
+    // 机器人自身的群变更使用独立的 bot.increase/bot.decrease 事件。
+    const isGroupBotChange = event.notice_type === 'group'
+      && ['increase', 'decrease'].includes(event.sub_type)
+    const subType = isGroupBotChange ? `bot.${event.sub_type}` : event.sub_type
+    const rawUserId = event.user_id
+      || (!isGroupBotChange ? event.operator_id || event.raw?.d?.member_openid : undefined)
+
     const data = {
       event_id: event.event_id,
       raw: event,
@@ -2829,13 +2838,15 @@ const adapter = new class QQBotAdapter {
       self_id: id,
       post_type: event.post_type || 'notice',
       notice_type: event.notice_type,
-      sub_type: event.sub_type,
-      raw_message: event.raw_message || event.event_id || `${event.notice_type || 'notice'}.${event.sub_type || 'unknown'}`,
+      sub_type: subType,
+      raw_message: event.raw_message || event.event_id || `${event.notice_type || 'notice'}.${subType || 'unknown'}`,
       notice_id: event.notice_id,
       group_id: event.group_id ? `${id}${this.sep}${event.group_id}` : event.group_id,
-      user_id: event.user_id ? `${id}${this.sep}${event.user_id}` : (event.operator_id ? `${id}${this.sep}${event.operator_id}` : (event.raw?.d?.member_openid ? `${id}${this.sep}${event.raw.d.member_openid}` : undefined)),
+      user_id: rawUserId ? `${id}${this.sep}${rawUserId}` : undefined,
+      operator_id: event.operator_id ? `${id}${this.sep}${event.operator_id}` : undefined,
       raw_group_id: event.group_id,
-      raw_user_id: event.user_id || event.operator_id,
+      raw_user_id: rawUserId,
+      raw_operator_id: event.operator_id,
       platform: event.notice_type === 'guild' ? 'guild-notice' : 'QQ-notice'
     }
     this.setGenerateUrl(data)
@@ -2913,9 +2924,10 @@ const adapter = new class QQBotAdapter {
       case 'action':
         return this.makeCallback(id, event)
       case 'increase':
+        break
       case 'member.increase':
-        Bot[data.self_id].dau.setDau('group_increase', data)
         if (event.notice_type === 'group') {
+          Bot[data.self_id].dau.setDau('group_increase', data)
           const path = join(process.cwd(), 'plugins', 'QQBot-Plugin', 'Model', 'template', 'groupIncreaseMsg.js')
           if (fs.existsSync(path)) {
             import(`file://${path}`).then(i => i.default).then(async i => {
@@ -2933,8 +2945,14 @@ const adapter = new class QQBotAdapter {
         }
         break
       case 'decrease':
+        break
       case 'member.decrease':
-        Bot[data.self_id].dau.setDau('group_decrease', data)
+        if (event.notice_type === 'group') {
+          Bot[data.self_id].dau.setDau('group_decrease', data)
+        }
+        break
+      case 'bot.increase':
+      case 'bot.decrease':
         break
       case 'update':
       case 'member.update':
