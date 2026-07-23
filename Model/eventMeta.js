@@ -1,6 +1,11 @@
+function getRawData(event) {
+  return event?.raw?.d || event?.raw?.raw?.d || event?.raw_event?.d || {}
+}
+
 function parseMessageSceneExt(event) {
   const meta = {}
-  const ext = event?.message_scene?.ext
+  const rawData = getRawData(event)
+  const ext = event?.message_scene?.ext || event?.raw?.message_scene?.ext || rawData?.message_scene?.ext
   if (!Array.isArray(ext)) return meta
 
   for (const item of ext) {
@@ -39,7 +44,14 @@ function getMentionMeta(botId, mentions) {
 }
 
 function getMessageMeta(botId, event) {
-  const msgElements = Array.isArray(event?.msg_elements) ? event.msg_elements : []
+  const rawData = getRawData(event)
+  const msgElements = Array.isArray(event?.msg_elements)
+    ? event.msg_elements
+    : Array.isArray(event?.raw?.msg_elements)
+      ? event.raw.msg_elements
+      : Array.isArray(rawData?.msg_elements)
+        ? rawData.msg_elements
+        : []
   return {
     ...parseMessageSceneExt(event),
     msg_elements: msgElements,

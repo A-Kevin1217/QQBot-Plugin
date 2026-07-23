@@ -98,6 +98,82 @@ function normalizeSendEvent(event) {
   return event
 }
 
+
+function normalizeMessageFingerprint(text) {
+  return String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, 500)
+}
+
+function getSegmentText(message) {
+  if (!Array.isArray(message)) return ''
+  return message.map(item => {
+    if (!item || typeof item !== 'object') return ''
+    if (item.type === 'text') return item.text || item.data?.text || ''
+    return item.text || item.content || item.data?.text || item.data?.content || ''
+  }).filter(Boolean).join('')
+}
+
+function getQQBotMessageContentFingerprint(payload = {}) {
+  const candidates = [
+    payload.raw_message,
+    payload.content,
+    payload.raw?.raw_message,
+    payload.raw?.content,
+    payload.raw?.raw?.d?.content,
+    payload.raw_event?.d?.content,
+    getSegmentText(payload.message),
+    getSegmentText(payload.raw?.message)
+  ]
+  for (const item of candidates) {
+    const value = normalizeMessageFingerprint(item)
+    if (value) return value
+  }
+  return ''
+}
+
+function getQQBotQuotedElements(payload = {}) {
+  return [
+    ...(Array.isArray(payload.msg_elements) ? payload.msg_elements : []),
+    ...(Array.isArray(payload.raw?.msg_elements) ? payload.raw.msg_elements : []),
+    ...(Array.isArray(payload.raw?.raw?.d?.msg_elements) ? payload.raw.raw.d.msg_elements : []),
+    ...(Array.isArray(payload.raw_event?.d?.msg_elements) ? payload.raw_event.d.msg_elements : [])
+  ].filter(item => item && typeof item === 'object')
+}
+
+function getQQBotQuotedContentFingerprint(payload = {}) {
+  for (const item of getQQBotQuotedElements(payload)) {
+    const value = normalizeMessageFingerprint(
+      item.content || item.text || item.raw_message || item.markdown?.content || getSegmentText(item.message)
+    )
+    if (value) return value
+  }
+  return ''
+}
+
+function getQQBotQuotedAuthorOpenid(payload = {}) {
+  for (const item of getQQBotQuotedElements(payload)) {
+    const author = item.author || item.sender || {}
+    const id = author.member_openid || author.id || author.user_id || author.openid || author.user_openid
+    if (id) return String(id)
+  }
+  return ''
+}
+
+function getQQBotQuotedAuthorBot(payload = {}) {
+  for (const item of getQQBotQuotedElements(payload)) {
+    const author = item.author || item.sender || {}
+    if (typeof author.bot === 'boolean') return author.bot
+  }
+  return undefined
+}
+
+function getQQBotEventTime(payload = {}) {
+  const value = payload._rawTimestamp || payload.raw?._rawTimestamp || payload.timestamp || payload.raw?.timestamp || payload.time || Date.now()
+  const numeric = Number(value)
+  if (Number.isFinite(numeric) && numeric > 0) return numeric > 10000000000 ? numeric : numeric * 1000
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : Date.now()
+}
+
 function normalizeGroupMemberRole(role) {
   const value = String(role ?? '').trim().toLowerCase()
   if (/(^|_)owner$/.test(value)) return 'owner'
@@ -148,6 +224,9 @@ const adapter = new class QQBotAdapter {
     this.callbackEventCache = new Map()
     this.noticeEventCache = new Set()
     this.recallMessageCache = new Map()
+    this.messageIndexCache = new Map()
+    this.messageContentCache = new Map()
+    this.refContentCache = new Map()
     if (process.platform === "win32")
       this.sep = ""
     this.bind_user = {}
@@ -1252,7 +1331,7 @@ const adapter = new class QQBotAdapter {
           Bot.makeLog('debug', ['发送消息返回', ret], data.self_id)
 
           rets.data.push(ret)
-          this.rememberSentMessageRef(data, ret)
+          await this.rememberSentMessageRef(data, ret)
           if (ret.id) rets.message_id.push(ret.id)
           Bot[data.self_id].dau.setDau('send_msg', data)
         } catch (err) {
@@ -1503,12 +1582,25 @@ const adapter = new class QQBotAdapter {
 
   async recallMessageById(data, message_id, target_type, target_id) {
     try {
-      const url = `/v2/${target_type}s/${target_id}/messages/${message_id}`
+      const encodedTargetId = encodeURIComponent(String(target_id || ''))
+      const encodedMessageId = encodeURIComponent(String(message_id || ''))
+      const url = `/v2/${target_type}s/${encodedTargetId}/messages/${encodedMessageId}`
       Bot.makeLog('debug', ['撤回消息', { url, target_type, target_id, message_id }], data.self_id)
-      await data.bot.sdk.request.delete(url)
-      Bot.makeLog('info', [`撤回${target_type === 'group' ? '群' : '私聊'}文件消息成功`, { target_id, message_id }], data.self_id)
+      const ret = await data.bot.sdk.request.delete(url)
+      Bot.makeLog('info', [`撤回${target_type === 'group' ? '群' : '私聊'}消息成功`, { target_id, message_id, status: ret?.status }], data.self_id)
+      return { ok: true, type: target_type === 'group' ? 'group' : 'c2c', target_id, message_id }
     } catch (err) {
-      Bot.makeLog('error', ['撤回消息失败', { target_type, target_id, message_id }, err.message, err.response?.data], data.self_id)
+      const parsed = this.#parseRecallError?.(err) || { message: err.message, error: err.response?.data || { message: err.message } }
+      Bot.makeLog('error', ['撤回消息失败', { target_type, target_id, message_id }, parsed.code, parsed.message, parsed.error], data.self_id)
+      return {
+        ok: false,
+        type: target_type === 'group' ? 'group' : 'c2c',
+        target_id,
+        message_id,
+        code: parsed.code,
+        message: parsed.message || '撤回失败',
+        error: parsed.error
+      }
     }
   }
 
@@ -1517,31 +1609,313 @@ const adapter = new class QQBotAdapter {
     return String(value).replace(`${self_id}${this.sep}`, '')
   }
 
-  async rememberMessageRef(bot, refIdx, messageId) {
-    if (!bot || !refIdx || !messageId) return
+  getEventMessageId(event = {}) {
+    return String(
+      event.raw?.d?.id
+      || event.raw_event?.d?.id
+      || event.api_message_id
+      || event.id
+      || event.message_id
+      || ''
+    )
+  }
+
+  normalizeRecallType(type) {
+    if (type === 'c2c' || type === 'friend' || type === 'private') return 'user'
+    if (type === 'group') return 'group'
+    return type || ''
+  }
+
+  getRecallContext(data = {}, targetId = '', targetType = '') {
+    let type = this.normalizeRecallType(targetType)
+    if (!type) {
+      if (data.message_type === 'group' || data.notice_type === 'group' || data.group_id || data.raw_group_id || data.group_openid) type = 'group'
+      else if (data.message_type === 'private' || data.sub_type === 'friend' || data.user_id || data.raw_user_id) type = 'user'
+      else if (data.message_type === 'guild') type = 'guild'
+      else if (data.message_type === 'direct') type = 'direct'
+    }
+
+    let target = String(targetId || '').trim()
+    if (!target) {
+      if (type === 'group') target = data.raw_group_id || data.group_openid || data.raw?.group_id || this.stripSelfPrefix(data.self_id, data.group_id || '')
+      else if (type === 'user') target = data.raw_user_id || data.raw?.sender?.user_id || this.stripSelfPrefix(data.self_id, data.user_id || '')
+      else if (type === 'guild') target = data.channel_id || ''
+      else if (type === 'direct') target = data.guild_id || ''
+    }
+    return { type, target: String(target || '') }
+  }
+
+  #messageIndexKey(selfId, messageId) {
+    return `wind-msg-index:${selfId}:${messageId}`
+  }
+
+  #scopedMessageIndexKey(selfId, type, target, messageId) {
+    return `wind-msg-index:${selfId}:${type}:${target}:${messageId}`
+  }
+
+  #refKey(selfId, type, target, refIdx) {
+    return `wind-ref:${selfId}:${type}:${target}:${refIdx}`
+  }
+
+  #legacyRefKey(selfId, refIdx) {
+    return `wind-ref:${selfId}:${refIdx}`
+  }
+
+  async rememberMessageRef(dataOrBot, refIdx, messageId, context = {}) {
+    const bot = dataOrBot?.bot || dataOrBot
+    const selfId = dataOrBot?.self_id || bot?.uin
+    if (!selfId || !refIdx || !messageId) return
     const trimmed = String(refIdx).trim()
+    const { type, target } = context.type || context.target ? context : this.getRecallContext(dataOrBot)
     try {
-      await redis.set(`wind-ref:${bot.uin}:${trimmed}`, String(messageId), { EX: 86400 })
+      if (type && target) await redis.set(this.#refKey(selfId, type, target, trimmed), String(messageId), { EX: 86400 })
+      await redis.set(this.#legacyRefKey(selfId, trimmed), String(messageId), { EX: 86400 })
     } catch {}
   }
 
-  async getMessageIdByRefIdx(bot, refIdx) {
-    if (!bot || !refIdx) return ''
+  async getMessageIdByRefIdx(dataOrBot, refIdx, context = {}) {
+    const bot = dataOrBot?.bot || dataOrBot
+    const selfId = dataOrBot?.self_id || bot?.uin
+    if (!selfId || !refIdx) return ''
     const trimmed = String(refIdx).trim()
+    const { type, target } = context.type || context.target ? context : this.getRecallContext(dataOrBot)
     try {
-      return await redis.get(`wind-ref:${bot.uin}:${trimmed}`) || ''
+      if (type && target) {
+        const scoped = await redis.get(this.#refKey(selfId, type, target, trimmed))
+        if (scoped) return scoped
+      }
+      return await redis.get(this.#legacyRefKey(selfId, trimmed)) || ''
     } catch { return '' }
   }
 
-  rememberReceivedMessageRef(data) {
-    if (!data?.msg_idx || !data?.message_id) return
-    this.rememberMessageRef(data.bot, data.msg_idx, data.message_id)
+  async recordMessageIndex(data = {}, record = {}) {
+    const messageId = String(record.message_id || '').trim()
+    const selfId = record.self_id || data.self_id
+    if (!selfId || !messageId) return false
+    const context = this.getRecallContext(data, record.target_id, record.type)
+    const item = {
+      message_id: messageId,
+      actual_message_id: record.actual_message_id || '',
+      self_id: selfId,
+      target_id: record.target_id || context.target,
+      type: this.normalizeRecallType(record.type || context.type),
+      author_openid: record.author_openid || '',
+      member_role: record.member_role || '',
+      bot: record.bot === true,
+      time: record.time || getQQBotEventTime(data),
+      seq: record.seq || data.seq || data.raw?.seq || 0,
+      content_fingerprint: record.content_fingerprint || getQQBotMessageContentFingerprint(data),
+      aliases: [...new Set((record.aliases || []).filter(Boolean).map(String))]
+    }
+    const keys = [this.#messageIndexKey(selfId, messageId)]
+    if (item.type && item.target_id) keys.push(this.#scopedMessageIndexKey(selfId, item.type, item.target_id, messageId))
+    for (const alias of item.aliases) {
+      if (alias === messageId) continue
+      keys.push(this.#messageIndexKey(selfId, alias))
+      if (item.type && item.target_id) keys.push(this.#scopedMessageIndexKey(selfId, item.type, item.target_id, alias))
+      await this.rememberMessageRef(data, alias, messageId, { type: item.type, target: item.target_id })
+    }
+    try {
+      for (const key of keys) await redis.set(key, JSON.stringify(item), { EX: 86400 })
+    } catch {}
+    this.messageIndexCache.set(`${selfId}:${messageId}`, item)
+    await this.rememberMessageContentIndex(item)
+    return true
   }
 
-  rememberSentMessageRef(data, ret) {
+  #messageContentKey(selfId, type, target) {
+    return `wind-msg-content:${selfId}:${type}:${target}`
+  }
+
+  #refContentKey(selfId, type, target, refIdx) {
+    return `wind-ref-content:${selfId}:${type}:${target}:${refIdx}`
+  }
+
+  async rememberMessageContentIndex(item = {}) {
+    if (!item.self_id || !item.type || !item.target_id || !item.message_id || !item.content_fingerprint) return
+    const key = this.#messageContentKey(item.self_id, item.type, item.target_id)
+    let list = this.messageContentCache.get(key) || []
+    try {
+      const raw = await redis.get(key)
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        if (Array.isArray(parsed)) list = parsed
+      }
+    } catch {}
+    const next = list.filter(i => i?.message_id !== item.message_id)
+    next.push(item)
+    next.sort((a, b) => (b.time || 0) - (a.time || 0))
+    if (next.length > 500) next.length = 500
+    this.messageContentCache.set(key, next)
+    try { await redis.set(key, JSON.stringify(next), { EX: 86400 }) } catch {}
+  }
+
+  async rememberRefContent(data = {}, refs = [], context = {}) {
+    const content = getQQBotQuotedContentFingerprint(data)
+    if (!content) return
+    const selfId = data.self_id || data.bot?.uin
+    const { type, target } = context.type || context.target ? context : this.getRecallContext(data)
+    if (!selfId || !type || !target) return
+    const item = {
+      self_id: selfId,
+      type,
+      target_id: target,
+      content,
+      author_openid: getQQBotQuotedAuthorOpenid(data),
+      bot: getQQBotQuotedAuthorBot(data),
+      time: getQQBotEventTime(data)
+    }
+    for (const ref of refs) {
+      const id = String(ref ?? '').trim()
+      if (!this.isReferenceIndex(id)) continue
+      const key = this.#refContentKey(selfId, type, target, id)
+      this.refContentCache.set(key, item)
+      try { await redis.set(key, JSON.stringify(item), { EX: 10 * 60 }) } catch {}
+    }
+  }
+
+  async getRefContent(data = {}, ref = '', context = {}) {
+    const id = String(ref ?? '').trim()
+    if (!id || !this.isReferenceIndex(id)) return null
+    const selfId = data.self_id || data.bot?.uin
+    const { type, target } = context.type || context.target ? context : this.getRecallContext(data)
+    if (!selfId || !type || !target) return null
+    const key = this.#refContentKey(selfId, type, target, id)
+    if (this.refContentCache.has(key)) return this.refContentCache.get(key)
+    try {
+      const raw = await redis.get(key)
+      if (!raw) return null
+      const item = JSON.parse(raw)
+      this.refContentCache.set(key, item)
+      return item
+    } catch { return null }
+  }
+
+  getMessageAliases(data = {}) {
+    const aliases = []
+    const add = value => {
+      const text = String(value ?? '').trim()
+      if (text && !aliases.includes(text)) aliases.push(text)
+    }
+    add(data.message_id)
+    add(data.sdk_message_id)
+    add(data.msg_idx)
+    add(data.ref_msg_idx)
+    add(data.raw?.id)
+    add(data.raw?.message_id)
+    add(data.raw?.msg_id)
+    const ext = data.raw?.message_scene?.ext || data.raw?.raw?.d?.message_scene?.ext || data.raw_event?.d?.message_scene?.ext
+    if (Array.isArray(ext)) {
+      for (const item of ext) {
+        if (typeof item !== 'string') continue
+        const match = item.match(/^(?:msg_idx|ref_msg_idx)=(.+)$/)
+        if (match) add(match[1])
+      }
+    }
+    return aliases
+  }
+
+  async findMessageIndexByQuotedContent(data = {}, context = {}, refIdx = '') {
+    const refContent = refIdx ? await this.getRefContent(data, refIdx, context) : null
+    const content = getQQBotQuotedContentFingerprint(data) || refContent?.content || ''
+    if (!content) return null
+    const { type, target } = context.type || context.target ? context : this.getRecallContext(data)
+    const selfId = data.self_id || data.bot?.uin
+    if (!selfId || !type || !target) return null
+    const key = this.#messageContentKey(selfId, type, target)
+    let list = this.messageContentCache.get(key) || []
+    if (!list.length) {
+      try {
+        const raw = await redis.get(key)
+        const parsed = raw ? JSON.parse(raw) : []
+        if (Array.isArray(parsed)) {
+          list = parsed
+          this.messageContentCache.set(key, list)
+        }
+      } catch {}
+    }
+    const beforeTime = getQQBotEventTime(data) + 1000
+    const quotedAuthor = getQQBotQuotedAuthorOpenid(data) || refContent?.author_openid || ''
+    const quotedBot = typeof getQQBotQuotedAuthorBot(data) === 'boolean' ? getQQBotQuotedAuthorBot(data) : refContent?.bot
+    const exclude = new Set(this.getMessageAliases(data))
+    const candidates = list.filter(item => {
+      if (!item || item.content_fingerprint !== content) return false
+      if (item.time && item.time > beforeTime) return false
+      if (exclude.has(item.message_id) || exclude.has(item.actual_message_id)) return false
+      if (quotedAuthor && item.author_openid && item.author_openid !== quotedAuthor) return false
+      if (typeof quotedBot === 'boolean' && item.bot !== quotedBot) return false
+      return true
+    })
+    candidates.sort((a, b) => (b.time || 0) - (a.time || 0))
+    return candidates[0] || null
+  }
+
+  async getMessageIndex(data = {}, messageId = '', context = {}) {
+    const selfId = data.self_id || data.bot?.uin
+    const id = String(messageId || '').trim()
+    if (!selfId || !id) return null
+    const { type, target } = context.type || context.target ? context : this.getRecallContext(data)
+    const parse = raw => {
+      try { return raw ? JSON.parse(raw) : null } catch { return null }
+    }
+    try {
+      if (type && target) {
+        const scoped = parse(await redis.get(this.#scopedMessageIndexKey(selfId, type, target, id)))
+        if (scoped) return scoped
+      }
+      const item = parse(await redis.get(this.#messageIndexKey(selfId, id))) || this.messageIndexCache.get(`${selfId}:${id}`) || null
+      if (!item) return null
+      if (type && item.type && item.type !== type) return null
+      if (target && item.target_id && item.target_id !== target) return null
+      return item
+    } catch { return null }
+  }
+
+  async rememberReceivedMessageRef(data) {
+    if (!data?.message_id) return
+    const aliases = [
+      data.msg_idx,
+      data.raw?.msg_idx,
+      data.raw?.id,
+      data.raw?.message_id,
+      data.raw?.raw?.d?.id,
+      data.raw_event?.d?.id,
+      data.sdk_message_id
+    ]
+    const rawExt = data.raw?.message_scene?.ext || data.raw?.raw?.d?.message_scene?.ext || data.raw_event?.d?.message_scene?.ext
+    if (Array.isArray(rawExt)) {
+      for (const item of rawExt) {
+        if (typeof item !== 'string') continue
+        if (item.startsWith('msg_idx=')) aliases.push(item.slice('msg_idx='.length))
+      }
+    }
+    for (const ref of aliases) await this.rememberMessageRef(data, ref, data.message_id)
+    const role = normalizeGroupMemberRole(data.raw?.author?.member_role || data.sender?.role)
+    await this.recordMessageIndex(data, {
+      message_id: data.message_id,
+      author_openid: data.raw?.author?.member_openid || data.raw?.author?.id || data.raw?.sender?.user_id || data.sender?.raw_user_id || '',
+      member_role: role,
+      bot: data.raw?.author?.bot === true || data.sender?.bot === true,
+      content_fingerprint: getQQBotMessageContentFingerprint(data),
+      time: getQQBotEventTime(data),
+      seq: data.seq || data.raw?.seq || 0,
+      aliases: aliases.filter(Boolean)
+    })
+  }
+
+  async rememberSentMessageRef(data, ret) {
     const messageId = ret?.msg_id || ret?.id || ret?.message_id
-    const refIdx = ret?.ext_info?.ref_idx || ret?.ext_info?.msg_idx || ret?.msg_idx
-    this.rememberMessageRef(data?.bot, refIdx, messageId)
+    if (!messageId) return
+    const aliases = [ret?.ext_info?.ref_idx, ret?.ext_info?.msg_idx, ret?.msg_idx].filter(Boolean)
+    for (const refIdx of aliases) await this.rememberMessageRef(data, refIdx, messageId)
+    await this.recordMessageIndex(data, {
+      message_id: messageId,
+      author_openid: data?.self_id,
+      bot: true,
+      content_fingerprint: getQQBotMessageContentFingerprint(data),
+      time: Date.now(),
+      aliases
+    })
   }
 
   extractMessageIdFromElements(elements) {
@@ -1565,7 +1939,7 @@ const adapter = new class QQBotAdapter {
     }
 
     add(data?.ref_msg_idx)
-    const ext = data?.raw?.message_scene?.ext
+    const ext = data?.raw?.message_scene?.ext || data?.raw?.raw?.d?.message_scene?.ext || data?.raw_event?.d?.message_scene?.ext
     if (Array.isArray(ext)) {
       for (const item of ext) {
         if (typeof item !== 'string') continue
@@ -1573,32 +1947,129 @@ const adapter = new class QQBotAdapter {
       }
     }
     for (const elem of data?.msg_elements || []) {
-      if (elem && typeof elem === 'object') add(elem.msg_idx)
+      if (!elem || typeof elem !== 'object') continue
+      add(elem.msg_idx)
+      add(elem.id)
+      add(elem.message_id)
+      add(elem.msg_id)
     }
     return candidates
   }
 
   async getReferencedMessageId(data) {
     const directId = this.extractMessageIdFromElements(data?.msg_elements)
-    if (directId) return directId
+    const context = this.getRecallContext(data)
+    const refIdxList = this.extractRefIdxCandidates(data)
+    const addRef = value => {
+      value = String(value ?? '').trim()
+      if (value && !refIdxList.includes(value)) refIdxList.push(value)
+    }
 
-    for (const refIdx of this.extractRefIdxCandidates(data)) {
-      const messageId = await this.getMessageIdByRefIdx(data?.bot, refIdx)
+    if (directId && !this.isReferenceIndex(directId)) return directId
+    if (directId) {
+      addRef(directId)
+      const refMatch = directId.match(/^(?:ref_msg_idx|msg_idx)=(.+)$/)
+      if (refMatch) addRef(refMatch[1])
+    }
+
+    await this.rememberRefContent(data, refIdxList, context)
+
+    for (const refIdx of refIdxList) {
+      const messageId = await this.getMessageIdByRefIdx(data, refIdx, context)
       if (messageId) return messageId
     }
-    return ''
+
+    const record = await this.findMessageIndexByQuotedContent(data, context, refIdxList[0])
+    if (record) {
+      const messageId = record.actual_message_id || record.message_id
+      for (const refIdx of refIdxList) await this.rememberMessageRef(data, refIdx, messageId, context)
+      Bot.makeLog('debug', ['回复引用按内容命中消息ID', {
+        message_id: messageId,
+        refs: refIdxList,
+        content: getQQBotQuotedContentFingerprint(data),
+        author_openid: record.author_openid || '',
+        member_role: record.member_role || ''
+      }], data.self_id)
+      return messageId
+    }
+    return directId || ''
+  }
+
+  isReferenceIndex(value) {
+    return /^(?:REFIDX_|TMP_)/i.test(String(value || '')) || /^(?:ref_msg_idx|msg_idx)=/.test(String(value || ''))
+  }
+
+  async resolveRecallMessage(data, message_id, context = {}) {
+    const original = message_id
+    let id = ''
+    let source = 'direct'
+    if (message_id && typeof message_id === 'object') {
+      id = String(message_id.id || message_id.message_id || message_id.msg_id || '').trim()
+      source = 'object'
+    } else {
+      id = String(message_id ?? '').trim()
+    }
+
+    if (!id) {
+      id = await this.getReferencedMessageId(data)
+      source = 'referenced'
+    }
+    if (!id) return { id: '', source, original }
+
+    try {
+      const auditRaw = await redis.get(`wind-audit-message_id:${id}`)
+      if (auditRaw) {
+        const audit = JSON.parse(auditRaw)
+        if (audit?.success && audit?.id) return { id: String(audit.id), source: 'audit', original }
+      }
+    } catch {}
+
+    const refMatch = id.match(/^(?:ref_msg_idx|msg_idx)=(.+)$/)
+    if (refMatch) {
+      const resolved = await this.getMessageIdByRefIdx(data, refMatch[1], context)
+      if (resolved) return { id: resolved, source: 'ref_idx', original }
+      const contentRecord = await this.findMessageIndexByQuotedContent(data, context, refMatch[1])
+      if (contentRecord) {
+        const actual = contentRecord.actual_message_id || contentRecord.message_id
+        await this.rememberMessageRef(data, refMatch[1], actual, context)
+        return { id: actual, source: 'content', original, record: contentRecord }
+      }
+      return { id, source: 'ref_idx', original, unresolved: true, code: 'REFIDX_UNRESOLVED', message: '未找到引用索引对应的真实消息ID' }
+    }
+
+    let record = await this.getMessageIndex(data, id, context)
+    if (record) {
+      const actual = record.actual_message_id || record.message_id
+      return { id: actual, source: record.actual_message_id ? 'alias' : 'index', original, record }
+    }
+
+    const byRef = await this.getMessageIdByRefIdx(data, id, context)
+    if (byRef) {
+      record = await this.getMessageIndex(data, byRef, context)
+      return { id: record?.actual_message_id || record?.message_id || byRef, source: 'ref_idx', original, record }
+    }
+
+    if (this.isReferenceIndex(id)) {
+      const contentRecord = await this.findMessageIndexByQuotedContent(data, context, id)
+      if (contentRecord) {
+        const actual = contentRecord.actual_message_id || contentRecord.message_id
+        await this.rememberMessageRef(data, id, actual, context)
+        Bot.makeLog('debug', ['引用索引按内容命中消息ID', {
+          input_message_id: id,
+          resolved_message_id: actual,
+          content: getQQBotQuotedContentFingerprint(data),
+          author_openid: contentRecord.author_openid || '',
+          member_role: contentRecord.member_role || ''
+        }], data.self_id)
+        return { id: actual, source: 'content', original, record: contentRecord }
+      }
+      return { id, source, original, unresolved: true, code: 'REFIDX_UNRESOLVED', message: '未找到引用索引对应的真实消息ID' }
+    }
+    return { id, source, original }
   }
 
   async resolveRecallMessageId(data, message_id) {
-    if (message_id && typeof message_id === 'object') {
-      return message_id.id || message_id.message_id || message_id.msg_id || ''
-    }
-
-    const id = String(message_id ?? '').trim()
-    if (!id) return this.getReferencedMessageId(data)
-    const refMatch = id.match(/^(?:ref_msg_idx|msg_idx)=(.+)$/)
-    if (refMatch) return (await this.getMessageIdByRefIdx(data?.bot, refMatch[1])) || id
-    return (await this.getMessageIdByRefIdx(data?.bot, id)) || id
+    return (await this.resolveRecallMessage(data, message_id)).id
   }
 
   async uploadFileToQQ(data, target_id, target_type, file_data, file_name, force_chunk = false) {
@@ -1948,6 +2419,7 @@ const adapter = new class QQBotAdapter {
         if (result && result.id) {
           rets.message_id.push(result.id)
           rets.data.push(result)
+          await this.rememberSentMessageRef({ ...data, group_id: target_type === 'group' ? target_id : data.group_id, user_id: target_type === 'user' ? target_id : data.user_id }, result)
         }
       } catch (err) {
         Bot.makeLog('error', ['发送文件失败', fileInfo, err.message, err.response?.data], data.self_id)
@@ -2075,7 +2547,7 @@ const adapter = new class QQBotAdapter {
           Bot.makeLog('debug', ['发送消息返回', ret], data.self_id)
 
           rets.data.push(ret)
-          this.rememberSentMessageRef(data, ret)
+          await this.rememberSentMessageRef(data, ret)
           if (ret.id) rets.message_id.push(ret.id)
           Bot[data.self_id].dau.setDau('send_msg', data)
         } catch (err) {
@@ -2123,15 +2595,75 @@ const adapter = new class QQBotAdapter {
     return true
   }
 
+  #parseRecallError(err) {
+    const responseData = err?.response?.data
+    const rawMessage = responseData?.message || err?.message || '撤回失败'
+    let code = responseData?.err_code ?? responseData?.code
+    let message = rawMessage
+
+    // qq-official-bot@1.2.3 的响应拦截器会重新创建 Error，未保留 response。
+    // 从 `failed with code(CODE): MESSAGE` 中恢复结构化错误信息。
+    if (code == null && typeof rawMessage === 'string') {
+      const match = rawMessage.match(/failed with code\(([^)]+)\):\s*(.*)$/s)
+      if (match) {
+        code = /^\d+$/.test(match[1]) ? Number(match[1]) : match[1]
+        message = match[2] || rawMessage
+      }
+    }
+
+    return {
+      code,
+      message,
+      error: responseData || { code, message, raw_message: err?.message || rawMessage }
+    }
+  }
+
+  async #recallByPath(data, targetType, targetId, messageId, suffix = '') {
+    const encodedTargetId = encodeURIComponent(String(targetId || ''))
+    const encodedMessageId = encodeURIComponent(String(messageId || ''))
+    const base = targetType === 'group'
+      ? `/v2/groups/${encodedTargetId}`
+      : targetType === 'user'
+        ? `/v2/users/${encodedTargetId}`
+        : targetType === 'channels' || targetType === 'channel' || targetType === 'guild'
+          ? `/channels/${encodedTargetId}`
+          : targetType === 'dms' || targetType === 'direct'
+            ? `/dms/${encodedTargetId}`
+            : `/${String(targetType || '').replace(/^\/+|\/+$/g, '')}/${encodedTargetId}`
+    const result = await data.bot.sdk.request.delete(`${base}/messages/${encodedMessageId}${suffix}`)
+    return result?.status === 200 || result?.status === 204
+  }
+
   async recallMsg(data, recall, message_id) {
     if (!Array.isArray(message_id)) message_id = [message_id]
     const msgs = []
     for (const i of message_id) {
-      const id = await this.resolveRecallMessageId(data, i)
+      const context = this.getRecallContext(data)
+      const resolved = await this.resolveRecallMessage(data, i, context)
+      const id = resolved.id
       if (!id) {
-        msgs.push({ ok: false, message_id: id, message: 'msgid不能为空' })
+        msgs.push({ ok: false, message_id: id, source: resolved.source, message: 'msgid不能为空' })
         continue
       }
+      if (resolved.unresolved) {
+        const ret = { ok: false, message_id: id, input_message_id: resolved.original, source: resolved.source, code: resolved.code, message: resolved.message }
+        Bot.makeLog('warn', ['撤回消息跳过', ret], data.self_id)
+        msgs.push(ret)
+        continue
+      }
+      if (context.type === 'group' && resolved.record?.member_role && ['owner', 'admin'].includes(resolved.record.member_role)) {
+        const ret = { ok: false, message_id: id, input_message_id: resolved.original, source: resolved.source, code: 'ROLE_PROTECTED', message: '不能撤回管理员或群主消息' }
+        Bot.makeLog('warn', ['撤回消息跳过', ret], data.self_id)
+        msgs.push(ret)
+        continue
+      }
+      if (context.type === 'user' && resolved.record && resolved.record.bot !== true) {
+        const ret = { ok: false, message_id: id, input_message_id: resolved.original, source: resolved.source, code: 'C2C_USER_MESSAGE', message: 'C2C不能撤回用户发送的消息' }
+        Bot.makeLog('warn', ['撤回消息跳过', ret], data.self_id)
+        msgs.push(ret)
+        continue
+      }
+      Bot.makeLog('debug', ['撤回消息诊断', { input_message_id: resolved.original, resolved_message_id: id, source: resolved.source, context, record: resolved.record || null }], data.self_id)
 
       const recallKey = this.#makeRecallDedupeKey(data, id)
       if (!this.#markRecallMessage(recallKey)) {
@@ -2148,15 +2680,16 @@ const adapter = new class QQBotAdapter {
           msgs.push({ ok: false, message_id: id, message: err.message })
           continue
         }
-        msgs.push({ ok: true, message_id: id, data: ret })
+        msgs.push({ ok: true, message_id: id, data: ret, source: resolved.source })
       } catch (err) {
-        Bot.makeLog('warn', ['撤回消息错误', id, err.message, err.response?.data || err], data.self_id)
+        const parsed = this.#parseRecallError(err)
+        Bot.makeLog('warn', ['撤回消息错误', id, parsed.code, parsed.message, parsed.error], data.self_id)
         msgs.push({
           ok: false,
           message_id: id,
-          code: err.response?.data?.err_code || err.response?.data?.code,
-          message: err.response?.data?.message || err.message || '撤回失败',
-          error: err.response?.data || { message: err.message }
+          code: parsed.code,
+          message: parsed.message,
+          error: parsed.error
         })
       }
     }
@@ -2166,23 +2699,23 @@ const adapter = new class QQBotAdapter {
   recallFriendMsg(data, message_id) {
     const userId = this.stripSelfPrefix(data.self_id, data.user_id)
     Bot.makeLog('info', `撤回好友消息：[${userId}] ${message_id}`, data.self_id)
-    return this.recallMsg(data, i => data.bot.sdk.recallFriendMessage(userId, i), message_id)
+    return this.recallMsg({ ...data, message_type: 'private', user_id: userId }, i => this.#recallByPath(data, 'user', userId, i), message_id)
   }
 
   recallGroupMsg(data, message_id) {
     const groupId = this.stripSelfPrefix(data.self_id, data.raw_group_id || data.group_id)
     Bot.makeLog('info', `撤回群消息：[${groupId}] ${message_id}`, data.self_id)
-    return this.recallMsg(data, i => data.bot.sdk.recallGroupMessage(groupId, i), message_id)
+    return this.recallMsg({ ...data, message_type: 'group', group_id: groupId, group_openid: groupId }, i => this.#recallByPath(data, 'group', groupId, i), message_id)
   }
 
   recallDirectMsg(data, message_id, hide = config.hideGuildRecall) {
     Bot.makeLog('info', `撤回${hide ? '并隐藏' : ''}频道私聊消息：[${data.guild_id}] ${message_id}`, data.self_id)
-    return this.recallMsg(data, i => data.bot.sdk.recallDirectMessage(data.guild_id, i, hide), message_id)
+    return this.recallMsg({ ...data, message_type: 'direct' }, i => this.#recallByPath(data, 'dms', data.guild_id, i, `?hidetip=${!!hide}`), message_id)
   }
 
   recallGuildMsg(data, message_id, hide = config.hideGuildRecall) {
     Bot.makeLog('info', `撤回${hide ? '并隐藏' : ''}频道消息：[${data.channel_id}] ${message_id}`, data.self_id)
-    return this.recallMsg(data, i => data.bot.sdk.recallGuildMessage(data.channel_id, i, hide), message_id)
+    return this.recallMsg({ ...data, message_type: 'guild' }, i => this.#recallByPath(data, 'channels', data.channel_id, i, `?hidetip=${!!hide}`), message_id)
   }
 
   sendWakeUp(data, message) {
@@ -2541,11 +3074,15 @@ const adapter = new class QQBotAdapter {
       }
     }
 
-    // 提前存储 msg_idx → message_id 映射，避免被后续过滤逻辑跳过
+    const eventMessageId = this.getEventMessageId(event)
+    const sdkMessageId = String(event.message_id || '')
+
+    // 提前存储 msg_idx → 网关 d.id 映射，避免后续撤回拿到 SDK/缓存里的其它 message_id
     const msgIdx = event.msg_idx
       || event.message_scene?.ext?.find(e => typeof e === 'string' && e.startsWith('msg_idx='))?.slice('msg_idx='.length)
-    if (msgIdx && (event.message_id || event.id)) {
-      this.rememberMessageRef(Bot[id], msgIdx, event.message_id || event.id)
+      || event.raw?.d?.message_scene?.ext?.find(e => typeof e === 'string' && e.startsWith('msg_idx='))?.slice('msg_idx='.length)
+    if (msgIdx && eventMessageId) {
+      await this.rememberMessageRef({ bot: Bot[id], self_id: id, message_type: event.message_type, raw: event, group_id: event.group_id }, msgIdx, eventMessageId)
     }
 
     if (config.filter_bot_msg) {
@@ -2576,7 +3113,8 @@ const adapter = new class QQBotAdapter {
       post_type: event.post_type,
       message_type: event.message_type,
       sub_type: event.sub_type,
-      message_id: event.message_id || event.id,
+      message_id: eventMessageId,
+      sdk_message_id: sdkMessageId && sdkMessageId !== eventMessageId ? sdkMessageId : '',
       get unionid() { return this.sender.unionid },
       get openid() { return this.sender.openid },
       get user_id() { return this.sender.user_id },
@@ -2597,7 +3135,7 @@ const adapter = new class QQBotAdapter {
       atbot: messageMeta.atbot
     }
 
-    this.rememberReceivedMessageRef(data)
+    await this.rememberReceivedMessageRef(data)
     data.referenced_message_id = await this.getReferencedMessageId(data)
     data.source = data.referenced_message_id
       ? {
@@ -3025,6 +3563,19 @@ const adapter = new class QQBotAdapter {
     const sdk = new QQBot(opts)
     disableAxiosEnvProxy(sdk.request)
 
+    const originalDispatchEvent = sdk.dispatchEvent?.bind(sdk)
+    if (originalDispatchEvent) {
+      sdk.dispatchEvent = (event, wsRes) => {
+        if (wsRes?.d && typeof wsRes.d === 'object') {
+          const rawPacket = { ...wsRes, d: { ...wsRes.d } }
+          wsRes.d.raw = rawPacket
+          wsRes.d.raw_event = rawPacket
+          wsRes.d.api_message_id = wsRes.d.id
+        }
+        return originalDispatchEvent(event, wsRes)
+      }
+    }
+
     {
       const StreamInputMode = { REPLACE: 'replace' }
       const StreamInputState = { GENERATING: 1, DONE: 10 }
@@ -3213,6 +3764,20 @@ const adapter = new class QQBotAdapter {
 
       callback: {}
     }
+
+    sdk.recallPrivateMessage = async (userId, messageId) => (await this.recallFriendMsg({
+      self_id: id,
+      bot: Bot[id],
+      message_type: 'private',
+      user_id: String(userId || '')
+    }, messageId))?.[0]
+    sdk.recallGroupMessage = async (groupId, messageId) => (await this.recallGroupMsg({
+      self_id: id,
+      bot: Bot[id],
+      message_type: 'group',
+      group_id: String(groupId || ''),
+      group_openid: String(groupId || '')
+    }, messageId))?.[0]
 
     Bot[id].sdk.logger = {}
     for (const i of ['trace', 'debug', 'info', 'mark', 'warn', 'error', 'fatal']) {
