@@ -3579,7 +3579,7 @@ const adapter = new class QQBotAdapter {
     {
       const StreamInputMode = { REPLACE: 'replace' }
       const StreamInputState = { GENERATING: 1, DONE: 10 }
-      const StreamContentType = { MARKDOWN: 'markdown' }
+      const StreamContentType = { TEXT: 'text', MARKDOWN: 'markdown' }
 
       function extractText(message) {
         if (typeof message === 'string') return message
@@ -3595,32 +3595,91 @@ const adapter = new class QQBotAdapter {
         return ''
       }
 
-      async function sendStreamMessage(sdk, endpointPath, message, source, options) {
-        let content = extractText(message)
+      function getStreamSourcePayload(buildResult) {
+        const payload = buildResult?.messagePayload || {}
+        if (payload.markdown?.content) {
+          return {
+            content: String(payload.markdown.content),
+            contentType: StreamContentType.MARKDOWN,
+            payload
+          }
+        }
+        if (payload.content) {
+          return {
+            content: String(payload.content),
+            contentType: StreamContentType.TEXT,
+            payload
+          }
+        }
+        return { content: '', contentType: StreamContentType.TEXT, payload }
+      }
+
+      async function postStreamPart(sdk, endpointPath, req) {
+        try {
+          return await sdk.request.post(`${endpointPath}/stream_messages`, req)
+        } catch (e) {
+          const code = e.message?.match(/code\((\d+)\)/)?.[1]
+          if (code === '40034105' && req.event_id?.startsWith?.('INTERACTION_CREATE:')) {
+            return await sdk.request.post(`${endpointPath}/stream_messages`, {
+              ...req,
+              event_id: req.event_id.replace(/^INTERACTION_CREATE:/, '')
+            })
+          }
+          throw e
+        }
+      }
+
+      async function sendStreamMessage(sdk, endpointPath, message, source = {}, options = {}) {
+        const { MessageBuilder } = _require('qq-official-bot/lib/message/builder.js')
+        const buildResult = await new MessageBuilder(
+          sdk.config?.appid,
+          !endpointPath.startsWith('/v2'),
+          source
+        ).build(message)
+        const streamSource = getStreamSourcePayload(buildResult)
+        let content = streamSource.content || extractText(message)
         if (!content || typeof content !== 'string') throw new Error('流式消息内容必须是字符串')
-        const chunkSize = options.chunkSize || Math.ceil(content.length / 2)
-        const delay = options.delay || 100
+        const contentType = streamSource.content ? streamSource.contentType : StreamContentType.MARKDOWN
+        const chunkSize = Math.max(1, Number(options.chunkSize) || Math.ceil(content.length / 2) || 1)
+        const delay = Math.max(0, Number(options.delay) || 0)
+        const chars = Array.from(content)
+        const baseReq = {
+          input_mode: StreamInputMode.REPLACE,
+          content_type: contentType,
+          msg_seq: streamSource.payload.msg_seq
+        }
+        if (streamSource.payload.event_id) baseReq.event_id = streamSource.payload.event_id
+        else if (streamSource.payload.msg_id) baseReq.msg_id = streamSource.payload.msg_id
+        if (streamSource.payload.is_wakeup) baseReq.is_wakeup = true
+
         let streamMsgId = null
         let index = 0
         let currentContent = ''
-        for (let i = 0; i < content.length; i += chunkSize) {
-          const chunk = content.substring(i, i + chunkSize)
+        let lastResult = null
+        for (let i = 0; i < chars.length; i += chunkSize) {
+          const chunk = chars.slice(i, i + chunkSize).join('')
           currentContent += chunk
           const req = {
+            ...baseReq,
             input_mode: StreamInputMode.REPLACE,
-            input_state: i + chunkSize >= content.length ? StreamInputState.DONE : StreamInputState.GENERATING,
-            content_type: StreamContentType.MARKDOWN,
+            input_state: i + chunkSize >= chars.length ? StreamInputState.DONE : StreamInputState.GENERATING,
             content_raw: currentContent,
-            event_id: source?.event_id || `event_${Date.now()}`,
-            msg_id: source?.id || `msg_${Date.now()}`,
             index: index++
           }
           if (streamMsgId) req.stream_msg_id = streamMsgId
-          const response = await sdk.request.post(`${endpointPath}/stream_messages`, req)
+          const response = await postStreamPart(sdk, endpointPath, req)
+          lastResult = response.data || null
           if (!streamMsgId && response.data?.id) streamMsgId = response.data.id
-          if (i + chunkSize < content.length) await new Promise(r => setTimeout(r, delay))
+          if (i + chunkSize < chars.length && delay > 0) await new Promise(r => setTimeout(r, delay))
         }
-        return { id: streamMsgId, content: currentContent }
+        return {
+          id: streamMsgId || lastResult?.id,
+          timestamp: Date.now() / 1000,
+          brief: buildResult.brief,
+          content: currentContent,
+          ext_info: lastResult?.ext_info,
+          remain_msg_len: lastResult?.remain_msg_len
+        }
       }
 
       {
