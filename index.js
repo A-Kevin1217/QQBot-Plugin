@@ -115,6 +115,84 @@ function getSegmentText(message) {
   }).filter(Boolean).join('')
 }
 
+function clonePlain(value) {
+  if (value == null) return value
+  try {
+    return JSON.parse(JSON.stringify(value))
+  } catch {
+    if (Array.isArray(value)) return value.map(item => clonePlain(item))
+    if (typeof value === 'object') return { ...value }
+    return value
+  }
+}
+
+function normalizeImageSegment(item = {}) {
+  const data = item.data && typeof item.data === 'object' ? item.data : item
+  const file = data.file || data.url || data.src || data.image || data.file_url || data.file_path
+  if (!file) return null
+  return {
+    ...data,
+    type: 'image',
+    file,
+    url: data.url || file
+  }
+}
+
+function buildMessageFromQQBotElement(item = {}) {
+  const message = []
+  const nested = Array.isArray(item.message)
+    ? item.message
+    : Array.isArray(item.elements)
+      ? item.elements
+      : Array.isArray(item.msg_elements)
+        ? item.msg_elements
+        : []
+  if (nested.length) message.push(...flattenReceivedMessage(nested))
+
+  const text = item.content || item.text || item.raw_message || item.markdown?.content
+  if (text) message.push({ type: 'text', text: String(text) })
+
+  const images = []
+  for (const key of ['image', 'image_data', 'attachment', 'file']) {
+    const image = item[key]
+    if (image && typeof image === 'object') images.push(image)
+  }
+  for (const listKey of ['images', 'attachments', 'files']) {
+    if (Array.isArray(item[listKey])) images.push(...item[listKey])
+  }
+  for (const image of images) {
+    const segment = normalizeImageSegment(image)
+    if (segment) message.push(segment)
+  }
+
+  return message
+}
+
+function getQQBotQuotedMessage(payload = {}) {
+  for (const item of getQQBotQuotedElements(payload)) {
+    const message = buildMessageFromQQBotElement(item)
+    if (message.length) return message
+  }
+  return []
+}
+
+function normalizeCachedMessage(message = []) {
+  if (!Array.isArray(message)) return []
+  return flattenReceivedMessage(message).map(item => {
+    if (!item || typeof item !== 'object') return item
+    if (item.type === 'image') {
+      const image = normalizeImageSegment(item)
+      return image || item
+    }
+    if (item.type === 'file') {
+      const data = item.data && typeof item.data === 'object' ? item.data : item
+      const url = data.url || data.file || data.path || data.file_url
+      return url ? { ...data, type: 'file', url } : item
+    }
+    return item
+  })
+}
+
 function getQQBotMessageContentFingerprint(payload = {}) {
   const candidates = [
     payload.raw_message,
@@ -1780,6 +1858,9 @@ const adapter = new class QQBotAdapter {
       time: record.time || getQQBotEventTime(data),
       seq: record.seq || data.seq || data.raw?.seq || 0,
       content_fingerprint: record.content_fingerprint || getQQBotMessageContentFingerprint(data),
+      raw_message: record.raw_message ?? data.raw_message ?? getSegmentText(data.message),
+      message: normalizeCachedMessage(clonePlain(record.message ?? data.message ?? [])),
+      sender: clonePlain(record.sender ?? data.sender ?? {}),
       aliases: [...new Set((record.aliases || []).filter(Boolean).map(String))]
     }
     const keys = [this.#messageIndexKey(selfId, messageId)]
@@ -1946,6 +2027,48 @@ const adapter = new class QQBotAdapter {
     } catch { return null }
   }
 
+  buildReplyMessageFromRecord(data = {}, record = {}, messageId = '') {
+    if (!record && !messageId) return null
+    const message = normalizeCachedMessage(clonePlain(record?.message ?? []))
+    const rawMessage = record?.raw_message ?? getSegmentText(message)
+    const userId = record?.author_openid
+      ? `${data.self_id || record.self_id}${this.sep}${record.author_openid}`
+      : data.reply_user?.member_openid || data.reply_user?.id || data.reply_user?.user_id || data.reply_user?.openid || ''
+    const groupId = data.message_type === 'group'
+      ? data.group_id || (record?.target_id ? `${data.self_id || record.self_id}${this.sep}${record.target_id}` : undefined)
+      : undefined
+    const id = messageId || record?.actual_message_id || record?.message_id || ''
+    return {
+      self_id: data.self_id || record?.self_id,
+      message_id: id,
+      id,
+      user_id: userId,
+      group_id: groupId,
+      time: record?.time || 0,
+      seq: record?.seq || 0,
+      raw_message: rawMessage,
+      message
+    }
+  }
+
+  async getReferencedMessageRecord(data = {}) {
+    const messageId = data.referenced_message_id || await this.getReferencedMessageId(data)
+    let record = messageId ? await this.getMessageIndex(data, messageId, this.getRecallContext(data)) : null
+    if (!record && messageId && this.isReferenceIndex(messageId)) {
+      const contentRecord = await this.findMessageIndexByQuotedContent(data, this.getRecallContext(data), messageId)
+      if (contentRecord) record = contentRecord
+    }
+    const fallbackMessage = getQQBotQuotedMessage(data)
+    if (!record && !fallbackMessage.length && !messageId) return null
+    return {
+      ...(record || {}),
+      message_id: record?.message_id || messageId,
+      actual_message_id: record?.actual_message_id || '',
+      raw_message: record?.raw_message || getSegmentText(fallbackMessage),
+      message: record?.message?.length ? normalizeCachedMessage(record.message) : normalizeCachedMessage(fallbackMessage)
+    }
+  }
+
   async rememberReceivedMessageRef(data) {
     if (!data?.message_id) return
     const aliases = [
@@ -1972,6 +2095,8 @@ const adapter = new class QQBotAdapter {
       member_role: role,
       bot: data.raw?.author?.bot === true || data.sender?.bot === true,
       content_fingerprint: getQQBotMessageContentFingerprint(data),
+      raw_message: data.raw_message,
+      message: data.message,
       time: getQQBotEventTime(data),
       seq: data.seq || data.raw?.seq || 0,
       aliases: aliases.filter(Boolean)
@@ -1988,6 +2113,8 @@ const adapter = new class QQBotAdapter {
       author_openid: data?.self_id,
       bot: true,
       content_fingerprint: getQQBotMessageContentFingerprint(data),
+      raw_message: data.raw_message,
+      message: data.message,
       time: Date.now(),
       aliases
     })
@@ -3448,14 +3575,24 @@ const adapter = new class QQBotAdapter {
 
     await this.rememberReceivedMessageRef(data)
     data.referenced_message_id = await this.getReferencedMessageId(data)
+    const referencedRecord = await this.getReferencedMessageRecord(data)
+    const referencedReply = referencedRecord ? this.buildReplyMessageFromRecord(data, referencedRecord, data.referenced_message_id) : null
     data.source = data.referenced_message_id
       ? {
         id: data.referenced_message_id,
         message_id: data.referenced_message_id,
         user_id: data.reply_user?.member_openid || data.reply_user?.id || data.reply_user?.user_id || data.reply_user?.openid || '',
-        group_id: data.message_type === 'group' && event.group_id ? `${id}${this.sep}${event.group_id}` : undefined
+        group_id: data.message_type === 'group' && event.group_id ? `${id}${this.sep}${event.group_id}` : undefined,
+        time: referencedReply?.time || 0,
+        seq: referencedReply?.seq || 0,
+        raw_message: referencedReply?.raw_message || '',
+        message: referencedReply?.message || []
       }
       : undefined
+    data.getReply = async () => {
+      const record = await this.getReferencedMessageRecord(data)
+      return this.buildReplyMessageFromRecord(data, record, data.referenced_message_id) || referencedReply
+    }
 
     // 插入 reply segment 供 Yunzai loader 设置 e.reply_id，使 recallReply 等插件可正常撤回引用消息
     const replyRefId = data.referenced_message_id || data.ref_msg_idx
