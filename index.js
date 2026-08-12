@@ -2,6 +2,7 @@ import _ from 'lodash'
 import fs from 'node:fs'
 import QRCode from 'qrcode'
 import { join } from 'node:path'
+import { createRequire } from 'node:module'
 import imageSize from 'image-size'
 import crypto from 'node:crypto'
 import { randomUUID } from 'node:crypto'
@@ -29,6 +30,8 @@ import {
 import { qrRegister, generateQRCode, BindStatus } from './Model/qr-auth.js'
 import { getMessageMeta } from './Model/eventMeta.js'
 import { patchSessionManager } from './lib/sessionManagerPatch.js'
+
+const require = createRequire(import.meta.url)
 
 const QQBot = await (async () => {
   for (const pkg of ['qq-official-bot', 'qq-group-bot']) {
@@ -176,9 +179,80 @@ function getQQBotEventTime(payload = {}) {
 
 function normalizeGroupMemberRole(role) {
   const value = String(role ?? '').trim().toLowerCase()
-  if (/(^|_)owner$/.test(value)) return 'owner'
-  if (/(^|_)(admin|administrator)$/.test(value)) return 'admin'
+  if (/(^|_)(owner|creator|group_owner)$/.test(value) || ['4', 'owner_role'].includes(value)) return 'owner'
+  if (/(^|_)(admin|administrator|manager|group_admin)$/.test(value) || ['2', '3', 'admin_role'].includes(value)) return 'admin'
   return 'member'
+}
+
+function normalizeGroupBotRole(info = {}) {
+  if (info.is_owner || info.owner || info.data?.is_owner || info.data?.owner) return 'owner'
+  if (info.is_admin || info.admin || info.manager || info.data?.is_admin || info.data?.admin || info.data?.manager) return 'admin'
+  const candidates = [
+    info.role,
+    info.member_role,
+    info.bot_role,
+    info.group_role,
+    info.permission,
+    info.data?.role,
+    info.data?.member_role,
+    info.data?.bot_role,
+    info.data?.group_role,
+    info.data?.permission
+  ]
+  for (const item of candidates) {
+    const role = normalizeGroupMemberRole(item)
+    if (role !== 'member') return role
+  }
+  return 'member'
+}
+
+function buildGroupRoleFields(role) {
+  role = normalizeGroupMemberRole(role)
+  return {
+    role,
+    member_role: role,
+    is_admin: role === 'admin',
+    is_owner: role === 'owner',
+    is_member: role === 'member'
+  }
+}
+
+function getQQBotApiErrorCode(err) {
+  return String(err?.code || err?.response?.data?.code || err?.data?.code || err?.message?.match?.(/code\((\d+)\)/)?.[1] || '')
+}
+
+function isQQBotApiNoAccessError(err) {
+  return getQQBotApiErrorCode(err) === '11253'
+}
+
+function isGroupAtMessageEvent(event = {}) {
+  return event.sub_type === 'at'
+    || event.raw?.t === 'GROUP_AT_MESSAGE_CREATE'
+    || event.raw_event?.t === 'GROUP_AT_MESSAGE_CREATE'
+}
+
+function patchGroupRequestEventParser(sdk) {
+  for (const pkg of ['qq-official-bot', 'qq-group-bot']) {
+    try {
+      const eventsMod = require(`${pkg}/lib/events/index.js`)
+      const QQEvent = eventsMod?.QQEvent
+      const EventParserMap = eventsMod?.EventParserMap
+      if (!QQEvent) continue
+      if (!QQEvent.GROUP_JOIN_REQUEST) QQEvent.GROUP_JOIN_REQUEST = 'request.group'
+      if (EventParserMap && !EventParserMap.has('request.group')) {
+        EventParserMap.set('request.group', function (event, result) {
+          return Object.assign(result, {
+            sub_type: result.sub_type || 'add',
+            user_id: result.member_openid ?? result.user_id,
+            group_id: result.group_openid ?? result.group_id,
+            raw_user_id: result.member_openid,
+            join_request_id: result.join_request_id ?? result.flag
+          })
+        })
+      }
+      return
+    } catch {}
+  }
 }
 
 const startTime = new Date()
@@ -227,6 +301,7 @@ const adapter = new class QQBotAdapter {
     this.messageIndexCache = new Map()
     this.messageContentCache = new Map()
     this.refContentCache = new Map()
+    this.groupBotStateCache = new Map()
     if (process.platform === "win32")
       this.sep = ""
     this.bind_user = {}
@@ -2734,6 +2809,193 @@ const adapter = new class QQBotAdapter {
     }
   }
 
+  async groupManageRequest(id, method, url, body) {
+    try {
+      const res = method === 'get' && body
+        ? await Bot[id].sdk.request[method](url, { params: body })
+        : await Bot[id].sdk.request[method](url, body)
+      return res?.data ?? res
+    } catch (err) {
+      throw err
+    }
+  }
+
+  toGroupManageOpenid(id, value) {
+    value = String(value ?? '').replace(`${id}${this.sep}`, '')
+    const idx = value.lastIndexOf(':')
+    return idx > -1 ? value.slice(idx + 1) : value
+  }
+
+  getGroupInfo(id, group_openid) {
+    group_openid = this.toGroupManageOpenid(id, group_openid)
+    return this.groupManageRequest(id, 'get', `/v2/groups/${group_openid}/info`)
+  }
+
+  getGroupBotState(id, group_openid) {
+    group_openid = this.toGroupManageOpenid(id, group_openid)
+    return this.groupManageRequest(id, 'get', `/v2/groups/${group_openid}/bot_state`)
+  }
+
+  getCachedGroupBotRole(id, group_id) {
+    const groupOpenid = this.toGroupManageOpenid(id, group_id)
+    const key = `${id}:${groupOpenid}`
+    const cached = this.groupBotStateCache.get(key)
+    if (cached && cached.expires > Date.now()) return cached.role
+    return Bot[id]?.gl?.get?.(`${id}${this.sep}${groupOpenid}`)?.role || Bot[id]?.gl?.get?.(group_id)?.role || 'member'
+  }
+
+  async refreshGroupBotState(id, group_id) {
+    const groupOpenid = this.toGroupManageOpenid(id, group_id)
+    if (!groupOpenid) return buildGroupRoleFields('member')
+    const key = `${id}:${groupOpenid}`
+    const cached = this.groupBotStateCache.get(key)
+    if (cached && cached.expires > Date.now()) return buildGroupRoleFields(cached.role)
+
+    try {
+      const info = await this.getGroupBotState(id, groupOpenid)
+      const role = normalizeGroupBotRole(info)
+      const roleFields = buildGroupRoleFields(role)
+      this.groupBotStateCache.set(key, { role, info, expires: Date.now() + 60 * 1000 })
+      const groupKey = `${id}${this.sep}${groupOpenid}`
+      await Bot[id]?.gl?.set?.(groupKey, {
+        ...Bot[id].gl.get(groupKey),
+        group_id: groupKey,
+        bot_state: info,
+        ...roleFields
+      })
+      let gml = Bot[id]?.gml?.get?.(groupKey)
+      if (!gml) {
+        gml = new Map()
+        await Bot[id]?.gml?.set?.(groupKey, gml)
+      }
+      await gml?.set?.(String(id), {
+        ...gml.get(String(id)),
+        ...roleFields,
+        self_id: id,
+        user_id: String(id),
+        raw_user_id: String(id),
+        group_id: groupKey,
+        nickname: Bot[id]?.nickname,
+        card: Bot[id]?.nickname,
+        platform: 'QQ-group-member'
+      })
+      return roleFields
+    } catch (err) {
+      if (isQQBotApiNoAccessError(err)) {
+        const role = 'admin'
+        this.groupBotStateCache.set(key, { role, info: { code: 11253, message: '应用无接口访问权限' }, expires: Date.now() + 60 * 1000 })
+        return buildGroupRoleFields(role)
+      }
+      return buildGroupRoleFields(Bot[id]?.gl?.get?.(`${id}${this.sep}${groupOpenid}`)?.role || 'member')
+    }
+  }
+
+  async getGroupMemberInfo(id, group_openid, member_openid) {
+    group_openid = this.toGroupManageOpenid(id, group_openid)
+    member_openid = this.toGroupManageOpenid(id, member_openid)
+    try {
+      return await this.groupManageRequest(id, 'get', `/v2/groups/${group_openid}/members/${member_openid}`)
+    } catch (err) {
+      if (!isQQBotApiNoAccessError(err)) throw err
+      const groupKey = `${id}${this.sep}${group_openid}`
+      const memberMap = Bot[id]?.gml?.get?.(groupKey) || Bot[id]?.gml?.get?.(group_openid)
+      const cached = memberMap?.get?.(`${id}${this.sep}${member_openid}`) || memberMap?.get?.(member_openid)
+      const fallbackRole = normalizeGroupMemberRole(cached?.role || cached?.member_role)
+      return {
+        ...cached,
+        ...buildGroupRoleFields(fallbackRole),
+        user_id: member_openid,
+        raw_user_id: member_openid,
+        group_id: group_openid,
+        nickname: cached?.nickname || cached?.card || '',
+        card: cached?.card || cached?.nickname || ''
+      }
+    }
+  }
+
+  getGroupMuteState(id, group_openid) {
+    group_openid = this.toGroupManageOpenid(id, group_openid)
+    return this.groupManageRequest(id, 'get', `/v2/groups/${group_openid}/restrict_chat_setting`)
+  }
+
+  setGroupBan(id, group_openid, member_openid, duration = 0) {
+    group_openid = this.toGroupManageOpenid(id, group_openid)
+    const time = Number(duration)
+    const members = [{
+      op: time > 0 ? 'add' : 'del',
+      member_openid: this.toGroupManageOpenid(id, member_openid),
+      mute_expire_at: time > 0 ? new Date(Date.now() + time * 1000).toISOString() : ''
+    }]
+    return this.groupManageRequest(id, 'post', `/v2/groups/${group_openid}/restrict_chat_setting`, { members })
+  }
+
+  getGroupJoinRequestList(id, group_openid, cursor = '', limit = 20) {
+    group_openid = this.toGroupManageOpenid(id, group_openid)
+    const body = {}
+    if (cursor) body.cursor = cursor
+    if (limit) body.limit = limit
+    return this.groupManageRequest(id, 'get', `/v2/groups/${group_openid}/join_request_list`, body)
+  }
+
+  approvalJoinRequest(id, group_openid, member_openid, options = {}) {
+    group_openid = this.toGroupManageOpenid(id, group_openid)
+    member_openid = this.toGroupManageOpenid(id, member_openid)
+    const body = { op: options.op ?? (options.approve ? 'approve' : 'decline') }
+    if (options.join_request_id) body.join_request_id = options.join_request_id
+    if (body.op === 'decline' && options.reject_reason) body.reject_reason = String(options.reject_reason)
+    if (body.op === 'decline' && options.add_to_member_blacklist) body.add_to_member_blacklist = true
+    return this.groupManageRequest(id, 'post', `/v2/groups/${group_openid}/approval_join_request/${member_openid}`, body)
+  }
+
+  setGroupAddRequest(id, flagOrGroupOpenid, arg2, arg3, arg4, arg5, arg6) {
+    const isFlagStyle = typeof arg2 === 'boolean'
+    const approve = isFlagStyle ? arg2 : arg3
+    const reason = isFlagStyle ? arg3 : arg4
+    const member_openid = isFlagStyle ? arg5 : arg2
+    const join_request_id = isFlagStyle ? arg6 : arg5
+    const request = Bot[id]?.request_list?.find?.(item =>
+      item?.flag === flagOrGroupOpenid || item?.join_request_id === flagOrGroupOpenid
+    )
+    if (request) {
+      return request.approve(approve, reason)
+    }
+    if (member_openid) {
+      return this.approvalJoinRequest(id, flagOrGroupOpenid, member_openid, {
+        approve,
+        join_request_id,
+        reject_reason: reason
+      })
+    }
+    throw new Error(`No such group add request: ${flagOrGroupOpenid || ''}`)
+  }
+
+  getJoinApprovalStrategies(id, cursor = '', limit = 20) {
+    const qs = new URLSearchParams()
+    if (cursor) qs.set('cursor', cursor)
+    qs.set('limit', limit)
+    return this.groupManageRequest(id, 'get', `/v2/groups/join_approval_strategy?${qs}`)
+  }
+
+  createJoinApprovalStrategy(id, body) {
+    return this.groupManageRequest(id, 'post', '/v2/groups/join_approval_strategy', body)
+  }
+
+  updateJoinApprovalStrategy(id, strategy_id, body) {
+    return this.groupManageRequest(id, 'patch', `/v2/groups/join_approval_strategy/${strategy_id}`, body)
+  }
+
+  deleteJoinApprovalStrategy(id, strategy_id) {
+    return this.groupManageRequest(id, 'delete', `/v2/groups/join_approval_strategy/${strategy_id}`)
+  }
+
+  executeJoinApprovalStrategy(id, strategy_id) {
+    return this.groupManageRequest(id, 'post', `/v2/groups/join_approval_strategy/${strategy_id}/execute`)
+  }
+
+  updateJoinApprovalWhitelist(id, strategy_id, op, whitelist_users) {
+    return this.groupManageRequest(id, 'post', `/v2/groups/join_approval_strategy/${strategy_id}/whitelist_users`, { op, whitelist_users })
+  }
+
   sendGuildMsg(data, msg, event) {
     return this.sendGMsg(data, msg => data.bot.sdk.sendGuildMessage(data.channel_id, adaptSendableForSDK(msg), event), msg)
   }
@@ -2760,40 +3022,70 @@ const adapter = new class QQBotAdapter {
 
   pickMember(id, group_id, user_id) {
     if (!user_id) return undefined
+    if (typeof group_id !== 'string') group_id = String(group_id)
+    if (typeof user_id !== 'string') user_id = String(user_id)
     if (config.toQQUin && userIdCache[user_id]) {
       user_id = userIdCache[user_id]
     }
+    const groupOpenid = this.toGroupManageOpenid(id, group_id)
+    const groupKey = `${id}${this.sep}${groupOpenid}`
+    const userOpenid = this.toGroupManageOpenid(id, user_id)
     if (user_id.startsWith('qg_')) { return this.pickGuildMember(id, group_id, user_id) }
+    const selfRoleFields = userOpenid === id ? buildGroupRoleFields(this.getCachedGroupBotRole(id, groupOpenid)) : {}
+    const memberMap = Bot[id].gml.get(group_id) || Bot[id].gml.get(groupKey)
     const i = {
       ...Bot[id].fl.get(user_id),
-      ...Bot[id].gml.get(group_id)?.get(user_id),
+      ...memberMap?.get(user_id),
+      ...memberMap?.get(userOpenid),
+      ...selfRoleFields,
       self_id: id,
       bot: Bot[id],
-      user_id: user_id.replace(`${id}${this.sep}`, ''),
-      group_id: group_id.replace(`${id}${this.sep}`, ''),
+      user_id: userOpenid,
+      group_id: groupOpenid,
       platform: 'QQ-group-member'
     }
     return {
       ...this.pickFriend(id, user_id),
-      ...i
+      ...i,
+      getInfo: () => this.getGroupMemberInfo(id, groupOpenid, userOpenid)
     }
   }
 
   pickGroup(id, group_id) {
+    if (typeof group_id !== 'string') group_id = String(group_id)
     if (group_id.startsWith?.('qg_')) { return this.pickGuild(id, group_id) }
+    const groupOpenid = this.toGroupManageOpenid(id, group_id)
+    const groupKey = `${id}${this.sep}${groupOpenid}`
+    const roleFields = buildGroupRoleFields(this.getCachedGroupBotRole(id, groupOpenid))
     const i = {
+      ...Bot[id].gl.get(groupKey),
       ...Bot[id].gl.get(group_id),
+      ...roleFields,
       self_id: id,
       bot: Bot[id],
-      group_id: group_id.replace?.(`${id}${this.sep}`, '') || group_id,
+      group_id: groupOpenid,
       platform: 'QQ-group'
     }
+    const openid = value => this.toGroupManageOpenid(id, value)
     return {
       ...i,
       sendMsg: (msg, event) => this.sendGroupMsg(i, msg, event),
       pickMember: user_id => this.pickMember(id, group_id, user_id),
       recallMsg: message_id => this.recallGroupMsg(i, message_id),
-      getMemberMap: () => i.bot.gml.get(group_id)
+      getMemberMap: () => i.bot.gml.get(group_id) || i.bot.gml.get(groupKey),
+      getInfo: () => this.getGroupInfo(id, i.group_id),
+      getBotState: () => this.getGroupBotState(id, i.group_id),
+      getMuteState: () => this.getGroupMuteState(id, i.group_id),
+      getGroupMemberInfo: user_id => this.getGroupMemberInfo(id, i.group_id, openid(user_id)),
+      muteMember: (user_id, duration) => this.setGroupBan(id, i.group_id, openid(user_id), duration),
+      getJoinRequestList: (cursor, limit) => this.getGroupJoinRequestList(id, i.group_id, cursor, limit),
+      approveJoinRequest: (member_openid, options) => this.approvalJoinRequest(id, i.group_id, openid(member_openid), options),
+      getJoinApprovalStrategies: (cursor, limit) => this.getJoinApprovalStrategies(id, cursor, limit),
+      createJoinApprovalStrategy: body => this.createJoinApprovalStrategy(id, body),
+      updateJoinApprovalStrategy: (strategy_id, body) => this.updateJoinApprovalStrategy(id, strategy_id, body),
+      deleteJoinApprovalStrategy: strategy_id => this.deleteJoinApprovalStrategy(id, strategy_id),
+      executeJoinApprovalStrategy: strategy_id => this.executeJoinApprovalStrategy(id, strategy_id),
+      updateJoinApprovalWhitelist: (strategy_id, op, whitelist_users) => this.updateJoinApprovalWhitelist(id, strategy_id, op, whitelist_users)
     }
   }
 
@@ -2922,6 +3214,8 @@ const adapter = new class QQBotAdapter {
     this.setGenerateUrl(data)
     await this.setFriendMap(data)
     await this.setGroupMap(data)
+    await this.refreshGroupBotState(data.self_id, data.group_id)
+    data.group = this.pickGroup(data.self_id, data.group_id)
     data.member = this.pickMember(data.self_id, data.group_id, data.user_id)
   }
 
@@ -2996,9 +3290,11 @@ const adapter = new class QQBotAdapter {
 
   async setGroupMap(data) {
     if (!data.group_id) return
+    const groupRole = buildGroupRoleFields(data.group?.role || this.getCachedGroupBotRole(data.self_id, data.group_id))
     await data.bot.gl.set(data.group_id, {
       ...data.bot.gl.get(data.group_id),
-      group_id: data.group_id
+      group_id: data.group_id,
+      ...groupRole
     })
     let gml = data.bot.gml.get(data.group_id)
     if (!gml) {
@@ -3009,6 +3305,19 @@ const adapter = new class QQBotAdapter {
       ...gml.get(data.user_id),
       ...data.sender
     })
+    if (data.self_id && data.bot?.uin) {
+      await gml.set(String(data.bot.uin), {
+        ...gml.get(String(data.bot.uin)),
+        ...groupRole,
+        self_id: data.self_id,
+        user_id: String(data.bot.uin),
+        raw_user_id: String(data.bot.uin),
+        group_id: data.group_id,
+        nickname: data.bot.nickname,
+        card: data.bot.nickname,
+        platform: 'QQ-group-member'
+      })
+    }
   }
 
   async cacheAuditEvent(event) {
@@ -3113,6 +3422,8 @@ const adapter = new class QQBotAdapter {
       post_type: event.post_type,
       message_type: event.message_type,
       sub_type: event.sub_type,
+      sdk_sub_type: event.sub_type,
+      group_at_message: isGroupAtMessageEvent(event),
       message_id: eventMessageId,
       sdk_message_id: sdkMessageId && sdkMessageId !== eventMessageId ? sdkMessageId : '',
       get unionid() { return this.sender.unionid },
@@ -3210,7 +3521,11 @@ const adapter = new class QQBotAdapter {
 
     data.bot.stat.recv_msg_cnt++
     Bot[data.self_id].dau.setDau('receive_msg', data)
-    Bot.em(`${data.post_type}.${data.message_type}.${data.sub_type}`, data)
+    const emSubType = data.message_type === 'group' && data.sub_type === 'at' ? '' : data.sub_type
+    Bot.em([data.post_type, data.message_type, emSubType].filter(Boolean).join('.'), {
+      ...data,
+      sub_type: emSubType || data.sub_type
+    })
   }
 
   async makeCallback(id, event) {
@@ -3348,7 +3663,7 @@ const adapter = new class QQBotAdapter {
     Bot.em(`${data.post_type}.${data.message_type}.${data.sub_type}`, data)
   }
 
-  makeNotice(id, event) {
+  async makeNotice(id, event) {
     const noticeEventKey = event.event_id && `${id}:${event.event_id}`
     if (noticeEventKey) {
       if (this.noticeEventCache.has(noticeEventKey)) {
@@ -3416,6 +3731,7 @@ const adapter = new class QQBotAdapter {
         ...data,
         group_id: event.group_id
       }, msg, replyEventId ? { event_id: replyEventId } : {})
+      await this.refreshGroupBotState(id, data.group_id)
       data.group = this.pickGroup(id, data.group_id)
       if (replyEventId) {
         const sendMsg = data.group.sendMsg
@@ -3522,6 +3838,58 @@ const adapter = new class QQBotAdapter {
     }
   }
 
+  async makeGroupJoinRequest(id, event) {
+    const groupOpenid = event.group_id || event.group_openid
+    const memberOpenid = event.user_id || event.member_openid
+    const groupId = `${id}${this.sep}${groupOpenid}`
+    const data = {
+      raw: event,
+      raw_event: event.raw,
+      bot: Bot[id],
+      self_id: id,
+      post_type: 'request',
+      request_type: 'group',
+      sub_type: 'add',
+      platform: 'QQ-group',
+      group_id: groupId,
+      group_openid: groupOpenid,
+      user_id: `${id}${this.sep}${memberOpenid}`,
+      raw_user_id: memberOpenid,
+      nickname: event.username || '',
+      comment: event.verify_info?.verify_message || event.risk_tips || '',
+      flag: event.join_request_id || event.flag || event.notice_id || event.event_id || '',
+      join_request_id: event.join_request_id || '',
+      tips: event.risk_tips || '',
+      risk_tips: event.risk_tips || '',
+      apply_source: event.apply_source || '',
+      invited_by: event.invited_by || '',
+      verify_info: event.verify_info,
+      time: event.apply_at || event.timestamp
+    }
+
+    await this.refreshGroupBotState(id, groupId)
+    data.group = this.pickGroup(id, groupId)
+    data.member = this.pickMember(id, groupId, data.user_id)
+
+    data.approve = async (approve, reason) => {
+      try {
+        return await this.approvalJoinRequest(id, groupOpenid, memberOpenid, {
+          approve,
+          join_request_id: data.join_request_id,
+          reject_reason: approve ? undefined : reason
+        })
+      } catch (err) {
+        Bot.makeLog('error', ['审批加群请求失败', data.group_id, data.user_id, err], id)
+        throw err
+      }
+    }
+
+    data.bot.request_list ??= []
+    data.bot.request_list.push(data)
+    Bot.makeLog('info', `加群请求：${data.sub_type} ${data.comment}(${data.flag})`, data.self_id)
+    Bot.em(`${data.post_type}.${data.request_type}.${data.sub_type}`, data)
+  }
+
   getFriendMap(id) {
     return Bot.getMap(`${this.path}${id}/Friend`)
   }
@@ -3562,6 +3930,7 @@ const adapter = new class QQBotAdapter {
 
     const sdk = new QQBot(opts)
     disableAxiosEnvProxy(sdk.request)
+    patchGroupRequestEventParser(sdk)
 
     const originalDispatchEvent = sdk.dispatchEvent?.bind(sdk)
     if (originalDispatchEvent) {
@@ -3821,7 +4190,30 @@ const adapter = new class QQBotAdapter {
 
       dau: new Dau(id, this.sep, config.dauDB),
 
-      callback: {}
+      getGroupInfo: group_openid => this.getGroupInfo(id, group_openid),
+      getGroupBotState: group_openid => this.getGroupBotState(id, group_openid),
+      getGroupMemberInfo: (group_openid, member_openid) => this.getGroupMemberInfo(id, group_openid, member_openid),
+      getGroupMuteState: group_openid => this.getGroupMuteState(id, group_openid),
+      setGroupBan: (group_openid, member_openid, duration) => this.setGroupBan(id, group_openid, member_openid, duration),
+      getGroupJoinRequestList: (group_openid, cursor, limit) => this.getGroupJoinRequestList(id, group_openid, cursor, limit),
+      setGroupAddRequest: (flagOrGroupOpenid, arg2, arg3, arg4, arg5, arg6) =>
+        this.setGroupAddRequest(id, flagOrGroupOpenid, arg2, arg3, arg4, arg5, arg6),
+      getJoinApprovalStrategies: (cursor, limit) => this.getJoinApprovalStrategies(id, cursor, limit),
+      createJoinApprovalStrategy: body => this.createJoinApprovalStrategy(id, body),
+      updateJoinApprovalStrategy: (strategy_id, body) => this.updateJoinApprovalStrategy(id, strategy_id, body),
+      deleteJoinApprovalStrategy: strategy_id => this.deleteJoinApprovalStrategy(id, strategy_id),
+      executeJoinApprovalStrategy: strategy_id => this.executeJoinApprovalStrategy(id, strategy_id),
+      updateJoinApprovalWhitelist: (strategy_id, op, whitelist_users) => this.updateJoinApprovalWhitelist(id, strategy_id, op, whitelist_users),
+
+      callback: {},
+
+      request_list: [],
+      getRequestList() {
+        return this.request_list
+      },
+      getSystemMsg() {
+        return this.getRequestList()
+      }
     }
 
     sdk.recallPrivateMessage = async (userId, messageId) => (await this.recallFriendMsg({
@@ -3873,6 +4265,7 @@ const adapter = new class QQBotAdapter {
 
     Bot[id].sdk.on('message', event => this.makeMessage(id, event))
     Bot[id].sdk.on('notice', event => this.makeNotice(id, event))
+    Bot[id].sdk.on('request', event => this.makeGroupJoinRequest(id, event))
 
     Bot.makeLog("mark", `${this.name}(${this.id}) ${this.version} ${Bot[id].nickname} 已连接`, id)
     Bot.em(`connect.${id}`, { self_id: id })
