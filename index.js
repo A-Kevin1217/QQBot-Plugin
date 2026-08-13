@@ -784,7 +784,7 @@ const adapter = new class QQBotAdapter {
 
   makeButton(data, button) {
     const msg = {
-      id: randomUUID(),
+      id: button.id || randomUUID(),
       render_data: {
         label: button.text,
         visited_label: button.clicked_text,
@@ -858,6 +858,9 @@ const adapter = new class QQBotAdapter {
         ...button.QQBot?.action
       }
     } else return false
+
+    const groupId = button.group_id || button.QQBot?.group_id
+    if (groupId) msg.group_id = String(groupId)
 
     if (button.modal || button.content || button.confirm_text || button.cancel_text) {
       const modal = button.modal || button
