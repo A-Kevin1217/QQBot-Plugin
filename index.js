@@ -30,6 +30,10 @@ import {
 import { qrRegister, generateQRCode, BindStatus } from './Model/qr-auth.js'
 import { getMessageMeta } from './Model/eventMeta.js'
 import { patchSessionManager } from './lib/sessionManagerPatch.js'
+import {
+  sendWithGroupMarkdownImageRetry,
+  uploadRichMediaByParts
+} from './lib/richMediaUpload.js'
 
 const require = createRequire(import.meta.url)
 
@@ -2277,28 +2281,23 @@ const adapter = new class QQBotAdapter {
     return (await this.resolveRecallMessage(data, message_id)).id
   }
 
-  async uploadFileToQQ(data, target_id, target_type, file_data, file_name, force_chunk = false) {
-    if (typeof file_data === 'string' && file_data.startsWith('http') && !force_chunk) {
-      let fileSizeMB = 0
-      try {
-        const headResponse = await fetch(file_data, { method: 'HEAD' })
-        const contentLength = headResponse.headers.get('content-length')
-        fileSizeMB = contentLength ? parseInt(contentLength) / (1024 * 1024) : 0
-        Bot.makeLog('info', [`网络文件大小: ${fileSizeMB.toFixed(2)} MB`], data.self_id)
-      } catch (err) {
-        Bot.makeLog('debug', ['无法获取文件大小，尝试直传', err.message], data.self_id)
-      }
+  async uploadFileToQQ(data, target_id, target_type, file_data, file_name, force_chunk = false, file_type = 4) {
+    file_type = Number(file_type)
+    if (!['user', 'group'].includes(target_type)) throw new Error(`不支持的上传目标类型: ${target_type}`)
+    if (![1, 2, 3, 4].includes(file_type)) throw new Error(`不支持的富媒体类型: ${file_type}`)
 
+    if (typeof file_data === 'string' && file_data.startsWith('http') && !force_chunk) {
       Bot.makeLog('info', ['检测到网络 URL，使用直传（不下载文件）', { url: file_data.substring(0, 100), file_name }], data.self_id)
 
       try {
         const filesUrl = `/v2/${target_type}s/${target_id}/files`
         const filesData = {
-          file_type: 4,
+          file_type,
           srv_send_msg: false,
-          url: file_data,
-          file_name: file_name || this.extractFileNameFromUrl(file_data)
+          url: file_data
         }
+        const directFileName = file_name || this.extractFileNameFromUrl(file_data)
+        if (directFileName) filesData.file_name = directFileName
 
         Bot.makeLog('debug', ['URL 直传', filesUrl, filesData], data.self_id)
 
@@ -2309,13 +2308,7 @@ const adapter = new class QQBotAdapter {
         return result
       } catch (error) {
         Bot.makeLog('warn', ['URL 直传失败', error.message, error.response?.data], data.self_id)
-
-        if (fileSizeMB > 10) {
-          Bot.makeLog('info', [`文件大于 10MB (${fileSizeMB.toFixed(2)} MB)，降级为分片上传`], data.self_id)
-          force_chunk = true
-        } else {
-          Bot.makeLog('info', [`文件较小 (${fileSizeMB.toFixed(2)} MB)，降级为 base64 上传`], data.self_id)
-        }
+        Bot.makeLog('info', ['URL 直传失败，降级为分片上传'], data.self_id)
       }
     }
 
@@ -2328,11 +2321,14 @@ const adapter = new class QQBotAdapter {
         if (file_data.startsWith('http')) {
           Bot.makeLog('info', ['开始下载网络文件...'], data.self_id)
           const response = await fetch(file_data)
+          if (!response.ok) throw new Error(`下载网络文件失败: HTTP ${response.status}`)
           const buffer = Buffer.from(await response.arrayBuffer())
           Bot.makeLog('info', [`下载完成，大小: ${(buffer.length / 1024 / 1024).toFixed(2)} MB`], data.self_id)
           return buffer
         } else if (file_data.startsWith('base64://')) {
           return Buffer.from(file_data.replace('base64://', ''), 'base64')
+        } else if (/^data:[^/]+\/[^;]+;base64,/.test(file_data)) {
+          return Buffer.from(file_data.replace(/^data:[^/]+\/[^;]+;base64,/, ''), 'base64')
         } else if (file_data.startsWith('file://')) {
           return fs.readFileSync(file_data.replace('file://', ''))
         } else {
@@ -2418,7 +2414,8 @@ const adapter = new class QQBotAdapter {
       if (!name || !name.includes('.')) {
         const timestamp = Date.now().toString(36)
         const random = Math.random().toString(36).substring(2, 8)
-        name = `file_${timestamp}_${random}${ext || '.bin'}`
+        const defaultExt = { 1: '.jpg', 2: '.mp4', 3: '.silk', 4: '.bin' }[file_type]
+        name = `file_${timestamp}_${random}${ext || defaultExt}`
       }
 
       if (name.length > 100) {
@@ -2438,72 +2435,37 @@ const adapter = new class QQBotAdapter {
         file_name = extractFileName(file_data, fileBuffer)
       }
 
-      const shouldUseChunk = force_chunk || target_type === 'user'
-
-      Bot.makeLog('debug', ['上传方式判断', { force_chunk, target_type, shouldUseChunk, file_size_mb: (file_size / 1024 / 1024).toFixed(2) }], data.self_id)
-
-      if (!shouldUseChunk && target_type === 'group') {
-        Bot.makeLog('debug', ['群聊使用 base64 直传', { target_id, file_name, size: file_size }], data.self_id)
-
-        const filesUrl = `/v2/${target_type}s/${target_id}/files`
-        const base64Data = fileBuffer.toString('base64')
-        const filesData = {
-          file_type: 4,
-          srv_send_msg: false,
-          file_data: base64Data,
-          file_name: file_name
-        }
-
-        const { data: result } = await data.bot.sdk.request.post(filesUrl, filesData)
-
-        Bot.makeLog('debug', ['群聊 base64 直传成功', result], data.self_id)
-
-        return result
-      }
-
-      const md5Hash = crypto.createHash('md5').update(fileBuffer).digest('hex')
-      const sha1Hash = crypto.createHash('sha1').update(fileBuffer).digest('hex')
-      const MD5_10M_SIZE = 10002432
-      const md5_10m = crypto.createHash('md5')
-        .update(fileBuffer.slice(0, Math.min(MD5_10M_SIZE, file_size)))
-        .digest('hex')
-
-      Bot.makeLog('debug', ['准备分片上传', { target_id, target_type, file_name, file_size }], data.self_id)
-
-      const { data: prepareResult } = await data.bot.sdk.request.post(`/v2/${target_type}s/${target_id}/upload_prepare`, {
-        file_type: 4,
+      Bot.makeLog('debug', ['准备分片上传', {
+        target_id,
+        target_type,
+        file_type,
         file_name,
-        file_size,
-        md5: md5Hash,
-        sha1: sha1Hash,
-        md5_10m
-      })
+        file_size
+      }], data.self_id)
 
-      const { upload_id, parts } = prepareResult
+      const filesResult = await uploadRichMediaByParts({
+        request: data.bot.sdk.request,
+        endpointPath: `/v2/${target_type}s/${target_id}`,
+        fileBuffer,
+        fileType: file_type,
+        fileName: file_name,
+        onRetry: ({ stage, partIndex, attempt, delayMs, error }) => {
+          if (stage === 'session') {
+            Bot.makeLog('warn', ['富媒体上传任务失败，准备重新申请上传任务', {
+              attempt,
+              delay_ms: delayMs,
+              error: error?.message || String(error)
+            }], data.self_id)
+            return
+          }
 
-      for (const part of parts) {
-        const { index, presigned_url } = part
-        const start = (index - 1) * prepareResult.block_size
-        const end = Math.min(start + prepareResult.block_size, file_size)
-        const partBuffer = fileBuffer.slice(start, end)
-
-        await fetch(presigned_url, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': partBuffer.length },
-          body: partBuffer
-        })
-
-        await data.bot.sdk.request.post(`/v2/${target_type}s/${target_id}/upload_part_finish`, {
-          upload_id,
-          part_index: index,
-          block_size: partBuffer.length,
-          md5: crypto.createHash('md5').update(partBuffer).digest('hex')
-        })
-      }
-
-      const { data: filesResult } = await data.bot.sdk.request.post(`/v2/${target_type}s/${target_id}/files`, {
-        upload_id,
-        srv_send_msg: false
+          Bot.makeLog('warn', ['富媒体分片上传重试', {
+            stage,
+            part_index: partIndex,
+            attempt,
+            error: error?.message || String(error)
+          }], data.self_id)
+        }
       })
 
       Bot.makeLog('info', ['分片上传成功', filesResult], data.self_id)
@@ -4072,6 +4034,31 @@ const adapter = new class QQBotAdapter {
     disableAxiosEnvProxy(sdk.request)
     patchGroupRequestEventParser(sdk)
 
+    const originalMessageUploadFile = sdk.messageService?.uploadFile?.bind(sdk.messageService)
+    if (originalMessageUploadFile) {
+      sdk.messageService.uploadFile = async (endpointPath, buildResult) => {
+        const endpointMatch = String(endpointPath).match(/^\/v2\/(users|groups)\/([^/]+)$/)
+        const filePayload = buildResult?.filePayload || {}
+        const fileData = filePayload.file_data
+          ? `base64://${filePayload.file_data}`
+          : filePayload.url
+        if (!endpointMatch || !fileData) return originalMessageUploadFile(endpointPath, buildResult)
+
+        const targetType = endpointMatch[1] === 'groups' ? 'group' : 'user'
+        const uploadResult = await this.uploadFileToQQ(
+          { bot: { sdk }, self_id: id },
+          endpointMatch[2],
+          targetType,
+          fileData,
+          filePayload.file_name,
+          false,
+          filePayload.file_type
+        )
+        if (!uploadResult?.file_info) throw new Error('富媒体上传成功但未返回 file_info')
+        return { file_info: uploadResult.file_info }
+      }
+    }
+
     const originalDispatchEvent = sdk.dispatchEvent?.bind(sdk)
     if (originalDispatchEvent) {
       sdk.dispatchEvent = (event, wsRes) => {
@@ -4214,11 +4201,18 @@ const adapter = new class QQBotAdapter {
       const _require = createRequire(import.meta.url)
       const { MessageBuilder } = _require('qq-official-bot/lib/message/builder.js')
       async function sendRegularMessageWithMeta(endpointPath, buildResult, options = {}) {
-        const { data: result } = await this.request.post(endpointPath + '/messages', buildResult.messagePayload, {
-          headers: {
-            'Content-Type': buildResult.contentType
-          },
-          timeout: options.timeout || 10000
+        const { data: result } = await sendWithGroupMarkdownImageRetry({
+          endpointPath,
+          messagePayload: buildResult.messagePayload,
+          send: () => this.request.post(endpointPath + '/messages', buildResult.messagePayload, {
+            headers: {
+              'Content-Type': buildResult.contentType
+            },
+            timeout: options.timeout || 10000
+          }),
+          onRetry: ({ attempt, delayMs, code }) => {
+            logger.warn(`[QQBot] 群聊 Markdown 图片转存失败(code(${code}))，${delayMs}ms 后进行第 ${attempt} 次重试`)
+          }
         })
         if (this.isAuditResult(result)) {
           return {
@@ -4285,7 +4279,7 @@ const adapter = new class QQBotAdapter {
         if (buildResult.isFile) {
           buildResult.messagePayload.media = await this.uploadFile(endpointPath, buildResult)
         }
-        return await this.sendRegularMessage(endpointPath, buildResult)
+        return await sendRegularMessageWithMeta.call(this, endpointPath, buildResult)
       }
     }
 

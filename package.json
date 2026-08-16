@@ -2,6 +2,9 @@
   "name": "QQBot-Plugin",
   "type": "module",
   "author": "TimeRainStarSky",
+  "scripts": {
+    "test": "node --test"
+  },
   "dependencies": {
     "node-fetch": "^3.3.2",
     "qq-official-bot": "^1.2.3",
