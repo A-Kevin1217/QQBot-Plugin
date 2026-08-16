@@ -31,9 +31,15 @@ import { qrRegister, generateQRCode, BindStatus } from './Model/qr-auth.js'
 import { getMessageMeta } from './Model/eventMeta.js'
 import { patchSessionManager } from './lib/sessionManagerPatch.js'
 import {
+  rewriteMarkdownImageResources,
   sendWithGroupMarkdownImageRetry,
   uploadRichMediaByParts
 } from './lib/richMediaUpload.js'
+import {
+  buildGroupBotStateFields,
+  buildGroupRoleFields,
+  normalizeGroupMemberRole
+} from './lib/groupRole.js'
 
 const require = createRequire(import.meta.url)
 
@@ -257,46 +263,6 @@ function getQQBotEventTime(payload = {}) {
   if (Number.isFinite(numeric) && numeric > 0) return numeric > 10000000000 ? numeric : numeric * 1000
   const parsed = Date.parse(value)
   return Number.isFinite(parsed) ? parsed : Date.now()
-}
-
-function normalizeGroupMemberRole(role) {
-  const value = String(role ?? '').trim().toLowerCase()
-  if (/(^|_)(owner|creator|group_owner)$/.test(value) || ['4', 'owner_role'].includes(value)) return 'owner'
-  if (/(^|_)(admin|administrator|manager|group_admin)$/.test(value) || ['2', '3', 'admin_role'].includes(value)) return 'admin'
-  return 'member'
-}
-
-function normalizeGroupBotRole(info = {}) {
-  if (info.is_owner || info.owner || info.data?.is_owner || info.data?.owner) return 'owner'
-  if (info.is_admin || info.admin || info.manager || info.data?.is_admin || info.data?.admin || info.data?.manager) return 'admin'
-  const candidates = [
-    info.role,
-    info.member_role,
-    info.bot_role,
-    info.group_role,
-    info.permission,
-    info.data?.role,
-    info.data?.member_role,
-    info.data?.bot_role,
-    info.data?.group_role,
-    info.data?.permission
-  ]
-  for (const item of candidates) {
-    const role = normalizeGroupMemberRole(item)
-    if (role !== 'member') return role
-  }
-  return 'member'
-}
-
-function buildGroupRoleFields(role) {
-  role = normalizeGroupMemberRole(role)
-  return {
-    role,
-    member_role: role,
-    is_admin: role === 'admin',
-    is_owner: role === 'owner',
-    is_member: role === 'member'
-  }
 }
 
 function getQQBotApiErrorCode(err) {
@@ -791,7 +757,7 @@ const adapter = new class QQBotAdapter {
       id: button.id || randomUUID(),
       render_data: {
         label: button.text,
-        visited_label: button.clicked_text,
+        visited_label: button.clicked_text ?? button.text,
         style: button.style ?? 1,
         ...button.QQBot?.render_data
       }
@@ -2928,57 +2894,86 @@ const adapter = new class QQBotAdapter {
     return this.groupManageRequest(id, 'get', `/v2/groups/${group_openid}/bot_state`)
   }
 
-  getCachedGroupBotRole(id, group_id) {
+  getCachedGroupBotState(id, group_id) {
     const groupOpenid = this.toGroupManageOpenid(id, group_id)
     const key = `${id}:${groupOpenid}`
     const cached = this.groupBotStateCache.get(key)
-    if (cached && cached.expires > Date.now()) return cached.role
-    return Bot[id]?.gl?.get?.(`${id}${this.sep}${groupOpenid}`)?.role || Bot[id]?.gl?.get?.(group_id)?.role || 'member'
+    if (cached && cached.expires > Date.now()) return cached.state
+    const group = Bot[id]?.gl?.get?.(`${id}${this.sep}${groupOpenid}`) || Bot[id]?.gl?.get?.(group_id)
+    return buildGroupBotStateFields(group?.bot_state)
+  }
+
+  getCachedGroupBotRole(id, group_id) {
+    return this.getCachedGroupBotState(id, group_id).role
   }
 
   async refreshGroupBotState(id, group_id) {
     const groupOpenid = this.toGroupManageOpenid(id, group_id)
-    if (!groupOpenid) return buildGroupRoleFields('member')
+    if (!groupOpenid) return buildGroupBotStateFields()
     const key = `${id}:${groupOpenid}`
     const cached = this.groupBotStateCache.get(key)
-    if (cached && cached.expires > Date.now()) return buildGroupRoleFields(cached.role)
+    if (cached && cached.expires > Date.now()) return cached.state
 
     try {
       const info = await this.getGroupBotState(id, groupOpenid)
-      const role = normalizeGroupBotRole(info)
-      const roleFields = buildGroupRoleFields(role)
-      this.groupBotStateCache.set(key, { role, info, expires: Date.now() + 60 * 1000 })
+      const state = buildGroupBotStateFields(info)
+      this.groupBotStateCache.set(key, { state, info, expires: Date.now() + 60 * 1000 })
       const groupKey = `${id}${this.sep}${groupOpenid}`
       await Bot[id]?.gl?.set?.(groupKey, {
         ...Bot[id].gl.get(groupKey),
         group_id: groupKey,
         bot_state: info,
-        ...roleFields
+        ...buildGroupRoleFields(state.role),
+        bot_member_openid: state.member_openid,
+        bot_joined_at: state.joined_at,
+        bot_allow_proactive_msg: state.allow_proactive_msg,
+        bot_recv_msg_setting: state.recv_msg_setting
       })
       let gml = Bot[id]?.gml?.get?.(groupKey)
       if (!gml) {
         gml = new Map()
         await Bot[id]?.gml?.set?.(groupKey, gml)
       }
-      await gml?.set?.(String(id), {
-        ...gml.get(String(id)),
-        ...roleFields,
+      const memberOpenid = state.member_openid
+      const memberKeys = [...new Set([
+        String(id),
+        String(Bot[id]?.uin || ''),
+        memberOpenid,
+        memberOpenid && `${id}${this.sep}${memberOpenid}`
+      ].filter(Boolean))]
+      const cachedMember = memberKeys.reduce((result, memberKey) => ({
+        ...result,
+        ...gml?.get?.(memberKey)
+      }), {})
+      const selfMember = {
+        ...cachedMember,
+        ...state,
         self_id: id,
-        user_id: String(id),
-        raw_user_id: String(id),
+        user_id: memberOpenid ? `${id}${this.sep}${memberOpenid}` : String(id),
+        raw_user_id: memberOpenid || String(id),
+        openid: memberOpenid || String(id),
+        bot: true,
         group_id: groupKey,
         nickname: Bot[id]?.nickname,
         card: Bot[id]?.nickname,
         platform: 'QQ-group-member'
-      })
-      return roleFields
+      }
+      for (const memberKey of memberKeys) await gml?.set?.(memberKey, selfMember)
+      return state
     } catch (err) {
       if (isQQBotApiNoAccessError(err)) {
-        const role = 'admin'
-        this.groupBotStateCache.set(key, { role, info: { code: 11253, message: '应用无接口访问权限' }, expires: Date.now() + 60 * 1000 })
-        return buildGroupRoleFields(role)
+        const groupKey = `${id}${this.sep}${groupOpenid}`
+        const storedInfo = Bot[id]?.gl?.get?.(groupKey)?.bot_state
+        const state = buildGroupBotStateFields(storedInfo)
+        this.groupBotStateCache.set(key, {
+          state,
+          info: storedInfo,
+          error: { code: 11253, message: '应用无接口访问权限' },
+          expires: Date.now() + 60 * 1000
+        })
+        return state
       }
-      return buildGroupRoleFields(Bot[id]?.gl?.get?.(`${id}${this.sep}${groupOpenid}`)?.role || 'member')
+      return this.getCachedGroupBotState(id, groupOpenid)
     }
   }
 
@@ -3123,23 +3118,39 @@ const adapter = new class QQBotAdapter {
     const groupKey = `${id}${this.sep}${groupOpenid}`
     const userOpenid = this.toGroupManageOpenid(id, user_id)
     if (user_id.startsWith('qg_')) { return this.pickGuildMember(id, group_id, user_id) }
-    const selfRoleFields = userOpenid === id ? buildGroupRoleFields(this.getCachedGroupBotRole(id, groupOpenid)) : {}
     const memberMap = Bot[id].gml.get(group_id) || Bot[id].gml.get(groupKey)
-    const i = {
-      ...Bot[id].fl.get(user_id),
+    const cachedMember = {
       ...memberMap?.get(user_id),
       ...memberMap?.get(userOpenid),
-      ...selfRoleFields,
+      ...memberMap?.get(`${id}${this.sep}${userOpenid}`)
+    }
+    const botState = this.getCachedGroupBotState(id, groupOpenid)
+    const isSelf = [String(id), String(Bot[id]?.uin || ''), botState.member_openid]
+      .filter(Boolean)
+      .includes(userOpenid)
+    const roleFields = isSelf
+      ? botState
+      : buildGroupRoleFields(cachedMember.member_role || cachedMember.role)
+    const memberOpenid = isSelf && botState.member_openid ? botState.member_openid : userOpenid
+    const i = {
+      ...Bot[id].fl.get(user_id),
+      ...cachedMember,
+      ...roleFields,
       self_id: id,
       bot: Bot[id],
       user_id: userOpenid,
+      raw_user_id: memberOpenid,
+      openid: memberOpenid,
+      member_openid: memberOpenid,
       group_id: groupOpenid,
       platform: 'QQ-group-member'
     }
     return {
       ...this.pickFriend(id, user_id),
       ...i,
-      getInfo: () => this.getGroupMemberInfo(id, groupOpenid, userOpenid)
+      getInfo: () => isSelf
+        ? this.getGroupBotState(id, groupOpenid)
+        : this.getGroupMemberInfo(id, groupOpenid, userOpenid)
     }
   }
 
@@ -3167,6 +3178,7 @@ const adapter = new class QQBotAdapter {
       getMemberMap: () => i.bot.gml.get(group_id) || i.bot.gml.get(groupKey),
       getInfo: () => this.getGroupInfo(id, i.group_id),
       getBotState: () => this.getGroupBotState(id, i.group_id),
+      refreshBotState: () => this.refreshGroupBotState(id, i.group_id),
       getMuteState: () => this.getGroupMuteState(id, i.group_id),
       getGroupMemberInfo: user_id => this.getGroupMemberInfo(id, i.group_id, openid(user_id)),
       muteMember: (user_id, duration) => this.setGroupBan(id, i.group_id, openid(user_id), duration),
@@ -3267,7 +3279,8 @@ const adapter = new class QQBotAdapter {
 
   async makeGroupMessage(data, event) {
     const user = await data.bot.fl.get(`${data.self_id}${this.sep}${event.sender.user_id}`)
-    const role = normalizeGroupMemberRole(event.author?.member_role)
+    const memberOpenid = event.author?.member_openid || event.sender.user_id
+    const roleFields = buildGroupRoleFields(event.author?.member_role)
     data.sender = {
       user_id: `${data.self_id}${this.sep}${event.sender.user_id}`,
       raw_user_id: event.sender.user_id,
@@ -3275,11 +3288,11 @@ const adapter = new class QQBotAdapter {
       nickname: event.sender.user_name || user?.nickname || '',
       avatar: `https://q.qlogo.cn/qqapp/${data.bot.info.appid}/${event.sender.user_id}/0`,
       unionid: event.author?.union_openid || user?.unionid || '',
+      union_openid: event.author?.union_openid || user?.union_openid || user?.unionid || '',
+      user_openid: event.author?.user_openid || '',
+      member_openid: memberOpenid,
       openid: event.sender?.user_id || user?.openid || '',
-      role,
-      is_admin: role === 'admin',
-      is_owner: role === 'owner',
-      is_member: role === 'member'
+      ...roleFields
     }
     data.group_id = `${data.self_id}${this.sep}${event.group_id}`
     data.platform = 'QQ-group'
@@ -3308,7 +3321,11 @@ const adapter = new class QQBotAdapter {
     await this.setGroupMap(data)
     await this.refreshGroupBotState(data.self_id, data.group_id)
     data.group = this.pickGroup(data.self_id, data.group_id)
-    data.member = this.pickMember(data.self_id, data.group_id, data.user_id)
+    data.member = {
+      ...this.pickMember(data.self_id, data.group_id, data.user_id),
+      member_openid: memberOpenid,
+      ...roleFields
+    }
   }
 
   async makeDirectMessage(data, event) {
@@ -3393,22 +3410,47 @@ const adapter = new class QQBotAdapter {
       gml = new Map()
       await data.bot.gml.set(data.group_id, gml)
     }
-    await gml.set(data.user_id, {
-      ...gml.get(data.user_id),
+    const memberKeys = [...new Set([
+      data.user_id,
+      data.sender?.raw_user_id,
+      data.sender?.member_openid,
+      data.sender?.member_openid && `${data.self_id}${this.sep}${data.sender.member_openid}`
+    ].filter(Boolean).map(String))]
+    const cachedMember = memberKeys.reduce((result, memberKey) => ({
+      ...result,
+      ...gml.get(memberKey)
+    }), {})
+    const member = {
+      ...cachedMember,
       ...data.sender
-    })
+    }
+    for (const memberKey of memberKeys) await gml.set(memberKey, member)
     if (data.self_id && data.bot?.uin) {
-      await gml.set(String(data.bot.uin), {
-        ...gml.get(String(data.bot.uin)),
-        ...groupRole,
+      const botState = this.getCachedGroupBotState(data.self_id, data.group_id)
+      const botMemberOpenid = botState.member_openid
+      const botMemberKeys = [...new Set([
+        String(data.bot.uin),
+        botMemberOpenid,
+        botMemberOpenid && `${data.self_id}${this.sep}${botMemberOpenid}`
+      ].filter(Boolean))]
+      const cachedBotMember = botMemberKeys.reduce((result, memberKey) => ({
+        ...result,
+        ...gml.get(memberKey)
+      }), {})
+      const botMember = {
+        ...cachedBotMember,
+        ...botState,
         self_id: data.self_id,
-        user_id: String(data.bot.uin),
-        raw_user_id: String(data.bot.uin),
+        user_id: botMemberOpenid ? `${data.self_id}${this.sep}${botMemberOpenid}` : String(data.bot.uin),
+        raw_user_id: botMemberOpenid || String(data.bot.uin),
+        openid: botMemberOpenid || String(data.bot.uin),
+        bot: true,
         group_id: data.group_id,
         nickname: data.bot.nickname,
         card: data.bot.nickname,
         platform: 'QQ-group-member'
-      })
+      }
+      for (const memberKey of botMemberKeys) await gml.set(memberKey, botMember)
     }
   }
 
@@ -3519,7 +3561,15 @@ const adapter = new class QQBotAdapter {
       message_id: eventMessageId,
       sdk_message_id: sdkMessageId && sdkMessageId !== eventMessageId ? sdkMessageId : '',
       get unionid() { return this.sender.unionid },
+      get union_openid() { return this.sender?.union_openid || this.sender?.unionid },
       get openid() { return this.sender.openid },
+      get user_openid() { return this.sender?.user_openid },
+      get member_openid() { return this.sender?.member_openid },
+      get role() { return this.sender?.role },
+      get member_role() { return this.sender?.member_role },
+      get is_admin() { return this.sender?.is_admin === true },
+      get is_owner() { return this.sender?.is_owner === true },
+      get is_member() { return this.sender?.is_member === true },
       get user_id() { return this.sender.user_id },
       get nickname() { return this.sender.nickname },
       get avatar() { return this.sender.avatar },
@@ -4031,6 +4081,7 @@ const adapter = new class QQBotAdapter {
     else opts.intents.push('PUBLIC_GUILD_MESSAGES')
 
     const sdk = new QQBot(opts)
+    const adapterInstance = this
     disableAxiosEnvProxy(sdk.request)
     patchGroupRequestEventParser(sdk)
 
@@ -4201,6 +4252,7 @@ const adapter = new class QQBotAdapter {
       const _require = createRequire(import.meta.url)
       const { MessageBuilder } = _require('qq-official-bot/lib/message/builder.js')
       async function sendRegularMessageWithMeta(endpointPath, buildResult, options = {}) {
+        let refreshedMarkdownImages = false
         const { data: result } = await sendWithGroupMarkdownImageRetry({
           endpointPath,
           messagePayload: buildResult.messagePayload,
@@ -4210,6 +4262,35 @@ const adapter = new class QQBotAdapter {
             },
             timeout: options.timeout || 10000
           }),
+          beforeRetry: async ({ code }) => {
+            if (refreshedMarkdownImages) return
+            refreshedMarkdownImages = true
+
+            const refreshedCount = await rewriteMarkdownImageResources(
+              buildResult.messagePayload,
+              async sourceUrl => {
+                try {
+                  const image = await adapterInstance.makeMarkdownImage({
+                    self_id: id,
+                    bot: Bot[id]
+                  }, sourceUrl)
+                  return String(image?.url || '').match(/^\((https?:\/\/.*)\)$/)?.[1] || sourceUrl
+                } catch (error) {
+                  let resource = 'unknown'
+                  try {
+                    const url = new URL(sourceUrl)
+                    resource = url.origin + url.pathname
+                  } catch { }
+                  logger.warn(`[QQBot] Markdown 图片重新托管失败(code(${code})): ${resource} ${error.message}`)
+                  return sourceUrl
+                }
+              }
+            )
+
+            if (refreshedCount) {
+              logger.warn(`[QQBot] 已重新托管 ${refreshedCount} 个 Markdown 图片资源，准备重发`)
+            }
+          },
           onRetry: ({ attempt, delayMs, code }) => {
             logger.warn(`[QQBot] 群聊 Markdown 图片转存失败(code(${code}))，${delayMs}ms 后进行第 ${attempt} 次重试`)
           }
@@ -4326,6 +4407,7 @@ const adapter = new class QQBotAdapter {
 
       getGroupInfo: group_openid => this.getGroupInfo(id, group_openid),
       getGroupBotState: group_openid => this.getGroupBotState(id, group_openid),
+      refreshGroupBotState: group_openid => this.refreshGroupBotState(id, group_openid),
       getGroupMemberInfo: (group_openid, member_openid) => this.getGroupMemberInfo(id, group_openid, member_openid),
       getGroupMuteState: group_openid => this.getGroupMuteState(id, group_openid),
       setGroupBan: (group_openid, member_openid, duration) => this.setGroupBan(id, group_openid, member_openid, duration),
