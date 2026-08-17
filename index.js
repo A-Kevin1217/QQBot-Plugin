@@ -17,6 +17,7 @@ import {
   refConfig,
   isCNBEnabled,
   uploadToCNB,
+  getExternalImageUrl,
   prepareMarkdownImages,
   IMG_BED_STATS_MAX_DAYS,
   normalizeBed,
@@ -31,7 +32,6 @@ import { qrRegister, generateQRCode, BindStatus } from './Model/qr-auth.js'
 import { getMessageMeta } from './Model/eventMeta.js'
 import { patchSessionManager } from './lib/sessionManagerPatch.js'
 import {
-  rewriteMarkdownImageResources,
   sendWithGroupMarkdownImageRetry,
   uploadRichMediaByParts
 } from './lib/richMediaUpload.js'
@@ -678,15 +678,23 @@ const adapter = new class QQBotAdapter {
     const imageData = !Buffer.isBuffer(file) && file && typeof file === 'object' ? file : {}
     const imageMeta = imageData.data && typeof imageData.data === 'object' ? imageData.data : imageData
     const source = imageMeta.url || imageMeta.file || file
+    const externalUrl = getExternalImageUrl(source)
     summary = imageMeta.summary ?? imageData.summary ?? summary
 
-    const buffer = await Bot.Buffer(source)
-    const image = await this.makeBotImage(buffer) || {}
+    let buffer
+    let image
+    if (externalUrl) {
+      image = { url: externalUrl }
+    } else {
+      buffer = await Bot.Buffer(source)
+      image = await this.makeBotImage(buffer) || {}
+    }
     image.width = Number(imageMeta.width) || null
     image.height = Number(imageMeta.height) || null
 
     if (!image.width || !image.height) {
       try {
+        buffer ??= await Bot.Buffer(source)
         const size = imageSize(buffer)
         image.width = size.width
         image.height = size.height
@@ -703,7 +711,7 @@ const adapter = new class QQBotAdapter {
     summary = String(summary ?? '图片')
     if (/[<>\[\]()]/.test(summary)) summary = '图片'
 
-    if (Handler.has('QQBot.makeMarkdownImage')) {
+    if (!externalUrl && Handler.has('QQBot.makeMarkdownImage')) {
       const res = await Handler.call(
         'QQBot.makeMarkdownImage',
         data,
@@ -744,7 +752,7 @@ const adapter = new class QQBotAdapter {
 
     if (!image.url?.startsWith?.('http')) image.url = await Bot.fileToUrl(source)
 
-    Bot.makeLog('debug', [`图片URL: ${image.url}`, `来源: ${String(image.url).includes('File/') ? 'fileToUrl(本地服务)' : String(image.url).includes('gchat.qpic.cn') ? 'QQ CDN' : '图床'}`], data.self_id)
+    Bot.makeLog('debug', [`图片URL: ${image.url}`, `来源: ${externalUrl ? '外部直链' : String(image.url).includes('File/') ? 'fileToUrl(本地服务)' : String(image.url).includes('gchat.qpic.cn') ? 'QQ CDN' : '图床'}`], data.self_id)
 
     return {
       des: `![${summary} #${image.width || 0}px #${image.height || 0}px]`,
@@ -4081,7 +4089,6 @@ const adapter = new class QQBotAdapter {
     else opts.intents.push('PUBLIC_GUILD_MESSAGES')
 
     const sdk = new QQBot(opts)
-    const adapterInstance = this
     disableAxiosEnvProxy(sdk.request)
     patchGroupRequestEventParser(sdk)
 
@@ -4252,7 +4259,6 @@ const adapter = new class QQBotAdapter {
       const _require = createRequire(import.meta.url)
       const { MessageBuilder } = _require('qq-official-bot/lib/message/builder.js')
       async function sendRegularMessageWithMeta(endpointPath, buildResult, options = {}) {
-        let refreshedMarkdownImages = false
         const { data: result } = await sendWithGroupMarkdownImageRetry({
           endpointPath,
           messagePayload: buildResult.messagePayload,
@@ -4262,35 +4268,6 @@ const adapter = new class QQBotAdapter {
             },
             timeout: options.timeout || 10000
           }),
-          beforeRetry: async ({ code }) => {
-            if (refreshedMarkdownImages) return
-            refreshedMarkdownImages = true
-
-            const refreshedCount = await rewriteMarkdownImageResources(
-              buildResult.messagePayload,
-              async sourceUrl => {
-                try {
-                  const image = await adapterInstance.makeMarkdownImage({
-                    self_id: id,
-                    bot: Bot[id]
-                  }, sourceUrl)
-                  return String(image?.url || '').match(/^\((https?:\/\/.*)\)$/)?.[1] || sourceUrl
-                } catch (error) {
-                  let resource = 'unknown'
-                  try {
-                    const url = new URL(sourceUrl)
-                    resource = url.origin + url.pathname
-                  } catch { }
-                  logger.warn(`[QQBot] Markdown 图片重新托管失败(code(${code})): ${resource} ${error.message}`)
-                  return sourceUrl
-                }
-              }
-            )
-
-            if (refreshedCount) {
-              logger.warn(`[QQBot] 已重新托管 ${refreshedCount} 个 Markdown 图片资源，准备重发`)
-            }
-          },
           onRetry: ({ attempt, delayMs, code }) => {
             logger.warn(`[QQBot] 群聊 Markdown 图片转存失败(code(${code}))，${delayMs}ms 后进行第 ${attempt} 次重试`)
           }

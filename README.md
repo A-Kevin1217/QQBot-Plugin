@@ -156,7 +156,7 @@ pnpm install                # 让依赖版本对上
     - `redis`
       - 优点: 大部分使用redis存储,不会缓存
       - 缺点: 没有缓存所以有些没统计
-24. 单聊和群聊富媒体已接入官方分片上传接口：分片会按平台下发配置自动重试，整轮失败默认重新申请上传任务 2 次；群聊 Markdown 默认开启图片转存结果校验，遇到 `304010` 或 `40034004` 时会自动重新托管图片并退避重发 3 次，通常无需用户手动重发。
+24. 单聊和群聊富媒体已接入官方分片上传接口：分片会按平台下发配置自动重试，整轮失败默认重新申请上传任务 2 次；群聊 Markdown 默认开启图片转存结果校验，遇到 `304010` 或 `40034004` 时会保留原图片地址并退避重发 3 次。HTTP(S) 图片直链不会重新托管到图床。
 25. 群消息会把 `author.member_role` 完整映射到 `e.role/e.member_role`、`e.sender` 和 `e.member`，同时提供 `is_owner/is_admin/is_member`；机器人群内状态会自动缓存到 `e.group.bot_state`，并提供 `bot_member_openid/bot_joined_at/bot_allow_proactive_msg/bot_recv_msg_setting`。可通过 `e.group.refreshBotState()` 或 `Bot.refreshGroupBotState(group_openid)` 主动刷新。
 
 ## 安装教程

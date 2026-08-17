@@ -7,6 +7,19 @@ function getImageInput (item) {
   return item.file ? item : item.data
 }
 
+function getExternalImageUrl (source) {
+  if (typeof source !== 'string' && !(source instanceof URL)) return ''
+  const value = String(source).trim()
+  if (!value) return ''
+
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:' ? value : ''
+  } catch {
+    return ''
+  }
+}
+
 async function prepareMarkdownImages (adapter, data, msg) {
   const items = (Array.isArray(msg) ? msg : [msg]).map(normalizeMessageItem)
   const images = items
@@ -27,5 +40,6 @@ async function prepareMarkdownImages (adapter, data, msg) {
 }
 
 export {
+  getExternalImageUrl,
   prepareMarkdownImages
 }
