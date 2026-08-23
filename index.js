@@ -690,7 +690,7 @@ const adapter = new class QQBotAdapter {
       image = {}
       try {
         const localUrl = await Bot.fileToUrl(source)
-        if (/^https?:\/\//i.test(localUrl)) image.url = localUrl
+        if (/^https?:\/\//i.test(localUrl)) image.url = String(localUrl)
       } catch (err) {
         Bot.makeLog('debug', ['本地图片服务转换失败', source, err], data.self_id)
       }
