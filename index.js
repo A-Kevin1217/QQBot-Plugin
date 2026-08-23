@@ -350,6 +350,7 @@ const adapter = new class QQBotAdapter {
     this.messageContentCache = new Map()
     this.refContentCache = new Map()
     this.groupBotStateCache = new Map()
+    this.localMarkdownImageUrls = new Map()
     if (process.platform === "win32")
       this.sep = ""
     this.bind_user = {}
@@ -674,6 +675,66 @@ const adapter = new class QQBotAdapter {
     return defaultImageUrl || undefined
   }
 
+  rememberLocalMarkdownImageUrl(url, selfId) {
+    url = String(url || '')
+    if (!url.startsWith('http')) return
+
+    const now = Date.now()
+    for (const [key, value] of this.localMarkdownImageUrls) {
+      if (value.expires <= now) this.localMarkdownImageUrls.delete(key)
+    }
+    this.localMarkdownImageUrls.set(url, {
+      self_id: String(selfId || ''),
+      expires: now + 10 * 60 * 1000
+    })
+  }
+
+  async switchLocalMarkdownImagesToImageBed(data, message) {
+    const now = Date.now()
+    const text = JSON.stringify(message)
+    const localUrls = []
+    for (const [url, record] of this.localMarkdownImageUrls) {
+      if (record.expires <= now) {
+        this.localMarkdownImageUrls.delete(url)
+        continue
+      }
+      if (record.self_id === String(data.self_id || '') && text.includes(url)) localUrls.push(url)
+    }
+    if (!localUrls.length) return { message, replaced: 0 }
+
+    const replacements = new Map()
+    for (const localUrl of localUrls) {
+      try {
+        const buffer = await Bot.Buffer(localUrl, { http: true })
+        const imageBedUrl = await this.uploadToImageBed(data, buffer)
+        if (imageBedUrl && imageBedUrl !== localUrl) replacements.set(localUrl, String(imageBedUrl))
+      } catch (err) {
+        Bot.makeLog('warn', ['本地图片自动切换图床失败', localUrl, err], data.self_id)
+      }
+    }
+    if (!replacements.size) return { message, replaced: 0 }
+
+    const replaceStrings = value => {
+      if (typeof value === 'string') {
+        for (const [localUrl, imageBedUrl] of replacements) {
+          value = value.split(localUrl).join(imageBedUrl)
+        }
+        return value
+      }
+      if (Array.isArray(value)) return value.map(replaceStrings)
+      if (value && typeof value === 'object') {
+        return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, replaceStrings(item)]))
+      }
+      return value
+    }
+
+    return {
+      message: replaceStrings(clonePlain(message)),
+      replaced: replacements.size,
+      urls: [...replacements.values()]
+    }
+  }
+
   async makeMarkdownImage(data, file, summary = '图片') {
     const imageData = !Buffer.isBuffer(file) && file && typeof file === 'object' ? file : {}
     const imageMeta = imageData.data && typeof imageData.data === 'object' ? imageData.data : imageData
@@ -690,7 +751,10 @@ const adapter = new class QQBotAdapter {
       image = {}
       try {
         const localUrl = await Bot.fileToUrl(source)
-        if (/^https?:\/\//i.test(localUrl)) image.url = String(localUrl)
+        if (/^https?:\/\//i.test(localUrl)) {
+          image.url = String(localUrl)
+          this.rememberLocalMarkdownImageUrl(image.url, data.self_id)
+        }
       } catch (err) {
         Bot.makeLog('debug', ['本地图片服务转换失败', source, err], data.self_id)
       }
@@ -4070,6 +4134,7 @@ const adapter = new class QQBotAdapter {
   async connect(token) {
     token = token.split(':')
     const id = token[0]
+    const adapterInstance = this
     const opts = {
       ...config.bot,
       appid: token[1],
@@ -4273,8 +4338,13 @@ const adapter = new class QQBotAdapter {
             },
             timeout: options.timeout || 10000
           }),
-          onRetry: ({ attempt, delayMs, code }) => {
-            logger.warn(`[QQBot] 群聊 Markdown 图片转存失败(code(${code}))，${delayMs}ms 后进行第 ${attempt} 次重试`)
+          onRetry: async retryContext => {
+            const switched = await options.onMarkdownImageRetry?.(retryContext)
+            const { attempt, delayMs, code } = retryContext
+            if (!switched) {
+              logger.warn(`[QQBot] 群聊 Markdown 图片转存失败(code(${code}))，${delayMs}ms 后进行第 ${attempt} 次重试`)
+            }
+            return switched === true
           }
         })
         if (this.isAuditResult(result)) {
@@ -4306,8 +4376,35 @@ const adapter = new class QQBotAdapter {
         if (buildResult.isFile) {
           buildResult.messagePayload.media = await this.uploadFile(endpointPath, buildResult)
         }
+        let imageBedFallbackAttempted = false
+        const sendOptions = {
+          ...(options || {}),
+          onMarkdownImageRetry: async ({ code }) => {
+            if (imageBedFallbackAttempted) return false
+            imageBedFallbackAttempted = true
+
+            const fallback = await adapterInstance.switchLocalMarkdownImagesToImageBed(
+              { self_id: id, bot: Bot[id] },
+              message
+            )
+            if (!fallback.replaced) return false
+
+            const retryBuildResult = await new MessageBuilder(
+              this.appid,
+              !endpointPath.startsWith('/v2'),
+              source
+            ).build(fallback.message)
+            if (source?.smallbtn && retryBuildResult.messagePayload?.keyboard?.content) {
+              retryBuildResult.messagePayload.keyboard.content.style = { font_size: 'small' }
+            }
+            retryBuildResult.messagePayload.markdown.force_verify_image_resource = true
+            Object.assign(buildResult, retryBuildResult)
+            logger.info(`[QQBot] 本地图片被平台拒绝(code(${code}))，已自动切换图床并重发: ${fallback.urls.join(', ')}`)
+            return true
+          }
+        }
         try {
-          return await sendRegularMessageWithMeta.call(this, endpointPath, buildResult, options || {})
+          return await sendRegularMessageWithMeta.call(this, endpointPath, buildResult, sendOptions)
         } catch (e) {
           const code = e.message?.match(/code\((\d+)\)/)?.[1]
           const eventId = buildResult.messagePayload?.event_id
@@ -4319,13 +4416,13 @@ const adapter = new class QQBotAdapter {
                 event_id: eventId.replace(/^INTERACTION_CREATE:/, '')
               }
             }
-            return await sendRegularMessageWithMeta.call(this, endpointPath, retryBuildResult, options || {})
+            return await sendRegularMessageWithMeta.call(this, endpointPath, retryBuildResult, sendOptions)
           }
           if (buildResult.messagePayload && ['22007', '40034025', '40034128'].includes(code)) {
             logger.warn(`被动回复失败(code(${code}))，正在尝试通过主动消息发送`)
             delete buildResult.messagePayload.msg_id
             delete buildResult.messagePayload.event_id
-            return await sendRegularMessageWithMeta.call(this, endpointPath, buildResult, options || {})
+            return await sendRegularMessageWithMeta.call(this, endpointPath, buildResult, sendOptions)
           }
           throw e
         }
