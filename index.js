@@ -687,7 +687,14 @@ const adapter = new class QQBotAdapter {
       image = { url: externalUrl }
     } else {
       buffer = await Bot.Buffer(source)
-      image = await this.makeBotImage(buffer) || {}
+      image = {}
+      try {
+        const localUrl = await Bot.fileToUrl(source)
+        if (/^https?:\/\//i.test(localUrl)) image.url = localUrl
+      } catch (err) {
+        Bot.makeLog('debug', ['本地图片服务转换失败', source, err], data.self_id)
+      }
+      if (!image.url) image = await this.makeBotImage(buffer) || {}
     }
     image.width = Number(imageMeta.width) || null
     image.height = Number(imageMeta.height) || null
@@ -711,7 +718,7 @@ const adapter = new class QQBotAdapter {
     summary = String(summary ?? '图片')
     if (/[<>\[\]()]/.test(summary)) summary = '图片'
 
-    if (!externalUrl && Handler.has('QQBot.makeMarkdownImage')) {
+    if (!externalUrl && !image.url?.startsWith?.('http') && Handler.has('QQBot.makeMarkdownImage')) {
       const res = await Handler.call(
         'QQBot.makeMarkdownImage',
         data,
@@ -749,8 +756,6 @@ const adapter = new class QQBotAdapter {
         Bot.makeLog('debug', ['自定义图片图床上传失败', source, err], data.self_id)
       }
     }
-
-    if (!image.url?.startsWith?.('http')) image.url = await Bot.fileToUrl(source)
 
     Bot.makeLog('debug', [`图片URL: ${image.url}`, `来源: ${externalUrl ? '外部直链' : String(image.url).includes('File/') ? 'fileToUrl(本地服务)' : String(image.url).includes('gchat.qpic.cn') ? 'QQ CDN' : '图床'}`], data.self_id)
 
