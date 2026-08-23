@@ -4768,7 +4768,7 @@ export class QQBotAdapter extends plugin {
       return this.reply([
         '调用统计未开启，请先开启后再查看。',
         segment.button([
-          { text: '开启调用统计', callback: '#QQBot设置调用统计开启', permission: this.e.user_id }
+          { text: '开启调用统计', callback: '#QQBot设置调用统计开启' }
         ])
       ], true)
     }
@@ -4786,7 +4786,7 @@ export class QQBotAdapter extends plugin {
       return this.reply([
         '用户统计未开启，请先开启后再查看。',
         segment.button([
-          { text: '开启用户统计', callback: '#QQBot设置用户统计开启', permission: this.e.user_id }
+          { text: '开启用户统计', callback: '#QQBot设置用户统计开启' }
         ])
       ], true)
     }
