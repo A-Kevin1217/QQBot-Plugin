@@ -691,7 +691,8 @@ const adapter = new class QQBotAdapter {
 
   async switchLocalMarkdownImagesToImageBed(data, message) {
     const now = Date.now()
-    const text = JSON.stringify(message)
+    const payload = clonePlain(message)
+    const text = JSON.stringify(payload)
     const localUrls = []
     for (const [url, record] of this.localMarkdownImageUrls) {
       if (record.expires <= now) {
@@ -729,7 +730,7 @@ const adapter = new class QQBotAdapter {
     }
 
     return {
-      message: replaceStrings(clonePlain(message)),
+      message: replaceStrings(payload),
       replaced: replacements.size,
       urls: [...replacements.values()]
     }
@@ -750,9 +751,9 @@ const adapter = new class QQBotAdapter {
       buffer = await Bot.Buffer(source)
       image = {}
       try {
-        const localUrl = await Bot.fileToUrl(source)
-        if (/^https?:\/\//i.test(localUrl)) {
-          image.url = String(localUrl)
+        const localUrl = getExternalImageUrl(await Bot.fileToUrl(source))
+        if (localUrl) {
+          image.url = localUrl
           this.rememberLocalMarkdownImageUrl(image.url, data.self_id)
         }
       } catch (err) {
@@ -4398,20 +4399,17 @@ const adapter = new class QQBotAdapter {
 
             const fallback = await adapterInstance.switchLocalMarkdownImagesToImageBed(
               { self_id: id, bot: Bot[id] },
-              message
+              buildResult.messagePayload
             )
             if (!fallback.replaced) return false
 
-            const retryBuildResult = await new MessageBuilder(
-              this.appid,
-              !endpointPath.startsWith('/v2'),
-              source
-            ).build(fallback.message)
-            if (source?.smallbtn && retryBuildResult.messagePayload?.keyboard?.content) {
-              retryBuildResult.messagePayload.keyboard.content.style = { font_size: 'small' }
+            buildResult.messagePayload = fallback.message
+            if (source?.smallbtn && buildResult.messagePayload?.keyboard?.content) {
+              buildResult.messagePayload.keyboard.content.style = { font_size: 'small' }
             }
-            retryBuildResult.messagePayload.markdown.force_verify_image_resource = true
-            Object.assign(buildResult, retryBuildResult)
+            if (buildResult.messagePayload?.markdown && typeof buildResult.messagePayload.markdown === 'object') {
+              buildResult.messagePayload.markdown.force_verify_image_resource = true
+            }
             logger.info(`[QQBot] 本地图片被平台拒绝(code(${code}))，已自动切换图床并重发: ${fallback.urls.join(', ')}`)
             return true
           }

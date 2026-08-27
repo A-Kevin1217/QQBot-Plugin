@@ -32,7 +32,7 @@ async function prepareMarkdownImages (adapter, data, msg) {
       results.set(index, await adapter.makeMarkdownImage(data, input))
     } catch (err) {
       Bot.makeLog?.('error', [`第${index + 1}张图片处理失败`, err], data.self_id)
-      results.set(index, { des: '![图片加载失败]', url: '()' })
+      results.set(index, { des: '图片加载失败', url: '' })
     }
   }))
 
