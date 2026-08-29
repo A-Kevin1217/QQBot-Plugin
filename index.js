@@ -783,7 +783,9 @@ const adapter = new class QQBotAdapter {
     summary = String(summary ?? '图片')
     if (/[<>\[\]()]/.test(summary)) summary = '图片'
 
-    if (!externalUrl && !image.url?.startsWith?.('http') && Handler.has('QQBot.makeMarkdownImage')) {
+    // fileToUrl 可能已经生成了本地 HTTP 地址，但自定义图床仍需有机会将其替换为公网地址。
+    // 只有输入本身就是外部直链时，才保留原地址并跳过自定义图床。
+    if (!externalUrl && Handler.has('QQBot.makeMarkdownImage')) {
       const res = await Handler.call(
         'QQBot.makeMarkdownImage',
         data,
