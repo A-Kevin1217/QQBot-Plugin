@@ -279,6 +279,54 @@ function isGroupAtMessageEvent(event = {}) {
     || event.raw_event?.t === 'GROUP_AT_MESSAGE_CREATE'
 }
 
+// QQ 官方 SDK 的申请事件在不同版本中可能直接携带字段，也可能把原始数据
+// 放在 raw/raw_event/raw.d/raw_event.d 中。统一从这些位置读取，避免验证信息
+// 在 SDK 事件解析时丢失。
+function getJoinRequestCandidates(value = {}) {
+  return [
+    value,
+    value?.raw_event,
+    value?.raw,
+    value?.raw_event?.d,
+    value?.raw?.d
+  ].filter(item => item && typeof item === 'object')
+}
+
+function getJoinRequestField(value, ...keys) {
+  for (const candidate of getJoinRequestCandidates(value)) {
+    for (const key of keys) {
+      if (candidate[key] !== undefined && candidate[key] !== null && candidate[key] !== '') return candidate[key]
+    }
+  }
+  return undefined
+}
+
+function getJoinRequestVerifyInfo(value) {
+  let fallback
+  for (const candidate of getJoinRequestCandidates(value)) {
+    const info = candidate.verify_info ?? candidate.verifyInfo
+    if (!info || typeof info !== 'object') continue
+    fallback ??= info
+    if (Object.keys(info).length) return info
+  }
+  return fallback || {}
+}
+
+function getJoinRequestComment(value, verifyInfo) {
+  if (verifyInfo?.verify_message) return String(verifyInfo.verify_message)
+  if (Array.isArray(verifyInfo?.review_qa_list)) {
+    const qa = verifyInfo.review_qa_list
+      .map(item => {
+        const question = String(item?.question ?? '').trim()
+        const answer = String(item?.answer ?? '').trim()
+        return question && answer ? `${question}: ${answer}` : question || answer
+      })
+      .filter(Boolean)
+    if (qa.length) return qa.join('\n')
+  }
+  return String(getJoinRequestField(value, 'comment', 'message') ?? '')
+}
+
 function patchGroupRequestEventParser(sdk) {
   for (const pkg of ['qq-official-bot', 'qq-group-bot']) {
     try {
@@ -289,12 +337,19 @@ function patchGroupRequestEventParser(sdk) {
       if (!QQEvent.GROUP_JOIN_REQUEST) QQEvent.GROUP_JOIN_REQUEST = 'request.group'
       if (EventParserMap && !EventParserMap.has('request.group')) {
         EventParserMap.set('request.group', function (event, result) {
-          return Object.assign(result, {
-            sub_type: result.sub_type || 'add',
-            user_id: result.member_openid ?? result.user_id,
-            group_id: result.group_openid ?? result.group_id,
-            raw_user_id: result.member_openid,
-            join_request_id: result.join_request_id ?? result.flag
+          const source = result || {}
+          const sourceVerifyInfo = getJoinRequestVerifyInfo(source)
+          const eventVerifyInfo = getJoinRequestVerifyInfo(event)
+          const verifyInfo = Object.keys(sourceVerifyInfo).length ? sourceVerifyInfo : eventVerifyInfo
+          return Object.assign(result || {}, {
+            sub_type: source.sub_type || 'add',
+            user_id: getJoinRequestField(source, 'member_openid', 'user_id') ?? getJoinRequestField(event, 'member_openid', 'user_id'),
+            group_id: getJoinRequestField(source, 'group_openid', 'group_id') ?? getJoinRequestField(event, 'group_openid', 'group_id'),
+            raw_user_id: getJoinRequestField(source, 'member_openid', 'raw_user_id') ?? getJoinRequestField(event, 'member_openid', 'raw_user_id'),
+            join_request_id: getJoinRequestField(source, 'join_request_id', 'flag') ?? getJoinRequestField(event, 'join_request_id', 'flag'),
+            verify_info: verifyInfo,
+            comment: getJoinRequestComment(source, verifyInfo) || getJoinRequestComment(event, verifyInfo),
+            risk_tips: getJoinRequestField(source, 'risk_tips') ?? getJoinRequestField(event, 'risk_tips') ?? ''
           })
         })
       }
@@ -350,6 +405,7 @@ const adapter = new class QQBotAdapter {
     this.messageContentCache = new Map()
     this.refContentCache = new Map()
     this.groupBotStateCache = new Map()
+    this.groupJoinRequestSyncCache = new Map()
     this.localMarkdownImageUrls = new Map()
     if (process.platform === "win32")
       this.sep = ""
@@ -783,7 +839,9 @@ const adapter = new class QQBotAdapter {
     summary = String(summary ?? '图片')
     if (/[<>\[\]()]/.test(summary)) summary = '图片'
 
-    if (!externalUrl && !image.url?.startsWith?.('http') && Handler.has('QQBot.makeMarkdownImage')) {
+    // fileToUrl 可能已经生成了本地 HTTP 地址，但自定义图床仍需有机会将其替换为公网地址。
+    // 只有输入本身就是外部直链时，才保留原地址并跳过自定义图床。
+    if (!externalUrl && Handler.has('QQBot.makeMarkdownImage')) {
       const res = await Handler.call(
         'QQBot.makeMarkdownImage',
         data,
@@ -3094,12 +3152,158 @@ const adapter = new class QQBotAdapter {
     return this.groupManageRequest(id, 'post', `/v2/groups/${group_openid}/restrict_chat_setting`, { members })
   }
 
-  getGroupJoinRequestList(id, group_openid, cursor = '', limit = 20) {
+  normalizeGroupJoinRequest(id, group_openid, item = {}, rawEvent) {
+    const source = item && typeof item === 'object' ? item : {}
+    const groupOpenid = this.toGroupManageOpenid(id, group_openid || getJoinRequestField(source, 'group_openid', 'group_id'))
+    const memberOpenid = this.toGroupManageOpenid(id, getJoinRequestField(source, 'member_openid', 'raw_user_id', 'user_id') || '')
+    const joinRequestId = String(getJoinRequestField(source, 'join_request_id', 'flag') || '')
+    const verifyInfo = getJoinRequestVerifyInfo(source)
+    const comment = getJoinRequestComment(source, verifyInfo)
+    const riskTips = String(getJoinRequestField(source, 'risk_tips') || '')
+    const event = rawEvent || source
+    const groupId = `${id}${this.sep}${groupOpenid}`
+    const userId = `${id}${this.sep}${memberOpenid}`
+    const data = {
+      ...source,
+      raw: event,
+      raw_event: event,
+      bot: Bot[id],
+      self_id: id,
+      post_type: 'request',
+      request_type: 'group',
+      sub_type: 'add',
+      platform: 'QQ-group',
+      group_id: groupId,
+      group_openid: groupOpenid,
+      user_id: userId,
+      raw_user_id: memberOpenid,
+      member_openid: memberOpenid,
+      nickname: getJoinRequestField(source, 'username', 'nickname') || '',
+      comment,
+      flag: joinRequestId,
+      join_request_id: joinRequestId,
+      tips: riskTips,
+      risk_tips: riskTips,
+      apply_source: getJoinRequestField(source, 'apply_source') || '',
+      invited_by: getJoinRequestField(source, 'invited_by') || '',
+      verify_info: verifyInfo,
+      verify_message: verifyInfo.verify_message || '',
+      review_qa_list: Array.isArray(verifyInfo.review_qa_list) ? verifyInfo.review_qa_list : [],
+      time: getJoinRequestField(source, 'apply_at', 'timestamp', 'time')
+    }
+    if (!data.join_request_id && data.flag) data.join_request_id = data.flag
+
+    data.approve = async (approve, reason) => {
+      try {
+        const result = await this.approvalJoinRequest(id, groupOpenid, memberOpenid, {
+          approve,
+          join_request_id: data.join_request_id,
+          reject_reason: approve ? undefined : reason
+        })
+        if (result !== false) this.removeGroupJoinRequest(id, data)
+        return result
+      } catch (err) {
+        Bot.makeLog('error', ['审批加群请求失败', data.group_id, data.user_id, err], id)
+        throw err
+      }
+    }
+    return data
+  }
+
+  upsertGroupJoinRequest(id, data) {
+    if (!data?.group_id || !data?.raw_user_id) return data
+    const requestList = Bot[id]?.request_list || (Bot[id].request_list = [])
+    const requestId = data.join_request_id || data.flag
+    const index = requestList.findIndex(item => {
+      if (!item || item.request_type !== 'group' || item.sub_type !== 'add') return false
+      if (requestId && (item.join_request_id === requestId || item.flag === requestId)) return true
+      return item.group_openid === data.group_openid && item.raw_user_id === data.raw_user_id
+    })
+    if (index === -1) requestList.push(data)
+    else requestList[index] = { ...requestList[index], ...data }
+    return data
+  }
+
+  removeGroupJoinRequest(id, data) {
+    const requestList = Bot[id]?.request_list
+    if (!Array.isArray(requestList)) return
+    const requestId = data?.join_request_id || data?.flag
+    for (let index = requestList.length - 1; index >= 0; index--) {
+      const item = requestList[index]
+      const sameRequest = requestId && (item?.join_request_id === requestId || item?.flag === requestId)
+      const sameApplicant = item?.group_openid === data?.group_openid && item?.raw_user_id === data?.raw_user_id
+      if (sameRequest || (!requestId && sameApplicant)) requestList.splice(index, 1)
+    }
+  }
+
+  async getGroupJoinRequestList(id, group_openid, cursor = '', limit = 20) {
     group_openid = this.toGroupManageOpenid(id, group_openid)
     const body = {}
     if (cursor) body.cursor = cursor
     if (limit) body.limit = limit
-    return this.groupManageRequest(id, 'get', `/v2/groups/${group_openid}/join_request_list`, body)
+    const result = await this.groupManageRequest(id, 'get', `/v2/groups/${group_openid}/join_request_list`, body)
+    const list = Array.isArray(result?.list) ? result.list : []
+    const normalizedList = list.map(item => {
+      const request = this.normalizeGroupJoinRequest(id, group_openid, item)
+      this.upsertGroupJoinRequest(id, request)
+      return request
+    })
+    return { ...(result || {}), list: normalizedList }
+  }
+
+  async syncGroupJoinRequests(id, group_id, options = {}) {
+    options = options || {}
+    const groupOpenid = this.toGroupManageOpenid(id, group_id)
+    const cacheKey = `${id}:${groupOpenid}`
+    const cacheMs = Math.max(0, Number(options.cacheMs) || 5000)
+    const cached = this.groupJoinRequestSyncCache.get(cacheKey)
+    if (!options.force && cached?.promise) return cached.promise
+    if (!options.force && cached?.result && Date.now() - cached.updatedAt < cacheMs) return cached.result
+
+    const promise = this.fetchGroupJoinRequests(id, groupOpenid, options)
+    this.groupJoinRequestSyncCache.set(cacheKey, { promise, updatedAt: Date.now() })
+    try {
+      const result = await promise
+      this.groupJoinRequestSyncCache.set(cacheKey, { result, updatedAt: Date.now() })
+      return result
+    } catch (err) {
+      if (this.groupJoinRequestSyncCache.get(cacheKey)?.promise === promise) {
+        this.groupJoinRequestSyncCache.delete(cacheKey)
+      }
+      throw err
+    }
+  }
+
+  async fetchGroupJoinRequests(id, group_id, options = {}) {
+    const maxPages = Math.max(1, Number(options.maxPages) || 10)
+    const limit = Math.min(100, Math.max(1, Number(options.limit) || 100))
+    let cursor = options.cursor || ''
+    let pageCount = 0
+    let nextCursor = ''
+    const list = []
+    do {
+      const page = await this.getGroupJoinRequestList(id, group_id, cursor, limit)
+      list.push(...(page.list || []))
+      nextCursor = page.next_cursor || ''
+      cursor = nextCursor
+      pageCount += 1
+    } while (cursor && pageCount < maxPages)
+    if (!nextCursor) {
+      const groupOpenid = this.toGroupManageOpenid(id, group_id)
+      const activeKeys = new Set(list.map(item => item.join_request_id || item.flag || `${item.group_openid}:${item.raw_user_id}`))
+      const requestList = Bot[id]?.request_list
+      if (Array.isArray(requestList)) {
+        for (let index = requestList.length - 1; index >= 0; index--) {
+          const item = requestList[index]
+          const itemKey = item?.join_request_id || item?.flag || `${item?.group_openid}:${item?.raw_user_id}`
+          if (item?.request_type === 'group' && item?.sub_type === 'add' && item.group_openid === groupOpenid &&
+            !activeKeys.has(itemKey)) {
+            requestList.splice(index, 1)
+          }
+        }
+      }
+    }
+    return { list, next_cursor: nextCursor }
   }
 
   approvalJoinRequest(id, group_openid, member_openid, options = {}) {
@@ -4072,54 +4276,17 @@ const adapter = new class QQBotAdapter {
   }
 
   async makeGroupJoinRequest(id, event) {
-    const groupOpenid = event.group_id || event.group_openid
-    const memberOpenid = event.user_id || event.member_openid
-    const groupId = `${id}${this.sep}${groupOpenid}`
-    const data = {
-      raw: event,
-      raw_event: event.raw,
-      bot: Bot[id],
-      self_id: id,
-      post_type: 'request',
-      request_type: 'group',
-      sub_type: 'add',
-      platform: 'QQ-group',
-      group_id: groupId,
-      group_openid: groupOpenid,
-      user_id: `${id}${this.sep}${memberOpenid}`,
-      raw_user_id: memberOpenid,
-      nickname: event.username || '',
-      comment: event.verify_info?.verify_message || event.risk_tips || '',
-      flag: event.join_request_id || event.flag || event.notice_id || event.event_id || '',
-      join_request_id: event.join_request_id || '',
-      tips: event.risk_tips || '',
-      risk_tips: event.risk_tips || '',
-      apply_source: event.apply_source || '',
-      invited_by: event.invited_by || '',
-      verify_info: event.verify_info,
-      time: event.apply_at || event.timestamp
-    }
+    const groupOpenid = getJoinRequestField(event, 'group_id', 'group_openid')
+    const data = this.normalizeGroupJoinRequest(id, groupOpenid, event, event)
+    if (!data.flag) data.flag = event.notice_id || event.event_id || ''
+    const groupId = data.group_id
 
     await this.refreshGroupBotState(id, groupId)
     data.group = this.pickGroup(id, groupId)
     data.member = this.pickMember(id, groupId, data.user_id)
     this.attachMemberMap(data)
 
-    data.approve = async (approve, reason) => {
-      try {
-        return await this.approvalJoinRequest(id, groupOpenid, memberOpenid, {
-          approve,
-          join_request_id: data.join_request_id,
-          reject_reason: approve ? undefined : reason
-        })
-      } catch (err) {
-        Bot.makeLog('error', ['审批加群请求失败', data.group_id, data.user_id, err], id)
-        throw err
-      }
-    }
-
-    data.bot.request_list ??= []
-    data.bot.request_list.push(data)
+    this.upsertGroupJoinRequest(id, data)
     Bot.makeLog('info', `加群请求：${data.sub_type} ${data.comment}(${data.flag})`, data.self_id)
     Bot.em(`${data.post_type}.${data.request_type}.${data.sub_type}`, data)
   }
@@ -4502,6 +4669,7 @@ const adapter = new class QQBotAdapter {
       getGroupMuteState: group_openid => this.getGroupMuteState(id, group_openid),
       setGroupBan: (group_openid, member_openid, duration) => this.setGroupBan(id, group_openid, member_openid, duration),
       getGroupJoinRequestList: (group_openid, cursor, limit) => this.getGroupJoinRequestList(id, group_openid, cursor, limit),
+      syncGroupJoinRequests: (group_id, options) => this.syncGroupJoinRequests(id, group_id, options),
       setGroupAddRequest: (flagOrGroupOpenid, arg2, arg3, arg4, arg5, arg6) =>
         this.setGroupAddRequest(id, flagOrGroupOpenid, arg2, arg3, arg4, arg5, arg6),
       getJoinApprovalStrategies: (cursor, limit) => this.getJoinApprovalStrategies(id, cursor, limit),
