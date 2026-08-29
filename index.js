@@ -3608,7 +3608,6 @@ const adapter = new class QQBotAdapter {
       member_openid: memberOpenid,
       ...roleFields
     }
-    this.attachMemberMap(data)
   }
 
   async makeDirectMessage(data, event) {
@@ -4071,7 +4070,6 @@ const adapter = new class QQBotAdapter {
         break
       case 'group':
         data.group_id = `${id}${this.sep}${event.group_id}`
-        this.attachMemberMap(data)
         Bot.makeLog('info', [`群按钮点击事件：[${data.group_id}, ${data.user_id}]`, data.raw_message], data.self_id)
         data.reply = msg => this.sendGroupMsg(
           { ...data, group_id: event.group_id },
@@ -4169,7 +4167,6 @@ const adapter = new class QQBotAdapter {
       }, msg, replyEventId ? { event_id: replyEventId } : {})
       await this.refreshGroupBotState(id, data.group_id)
       data.group = this.pickGroup(id, data.group_id)
-      this.attachMemberMap(data)
       if (replyEventId) {
         const sendMsg = data.group.sendMsg
         data.group.sendMsg = (msg, source = {}) => sendMsg(msg, {
@@ -4284,7 +4281,6 @@ const adapter = new class QQBotAdapter {
     await this.refreshGroupBotState(id, groupId)
     data.group = this.pickGroup(id, groupId)
     data.member = this.pickMember(id, groupId, data.user_id)
-    this.attachMemberMap(data)
 
     this.upsertGroupJoinRequest(id, data)
     Bot.makeLog('info', `加群请求：${data.sub_type} ${data.comment}(${data.flag})`, data.self_id)
@@ -4301,15 +4297,6 @@ const adapter = new class QQBotAdapter {
 
   getMemberMap(id) {
     return Bot.getMap(`${this.path}${id}/Member`)
-  }
-
-  attachMemberMap(data) {
-    if (!data?.group_id) return data
-    data.getMemberMap = (...args) => {
-      const group = data.group || data.bot?.pickGroup?.(data.group_id)
-      return group?.getMemberMap?.(...args)
-    }
-    return data
   }
 
   async connect(token) {
