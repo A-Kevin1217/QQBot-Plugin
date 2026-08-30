@@ -18,6 +18,7 @@ import {
   isCNBEnabled,
   uploadToCNB,
   getExternalImageUrl,
+  inspectMotionPhoto,
   prepareMarkdownImages,
   IMG_BED_STATS_MAX_DAYS,
   normalizeBed,
@@ -1068,7 +1069,12 @@ const adapter = new class QQBotAdapter {
           content += await this.makeRawMarkdownText(data, i.text, button)
           break
         case 'image': {
-          const { des, url } = imageResults.get(idx) || await this.makeMarkdownImage(data, i)
+          const imageResult = imageResults.get(idx) || await this.makeMarkdownImage(data, i)
+          if (imageResult.motionPhoto) {
+            messages.push([i])
+            break
+          }
+          const { des, url } = imageResult
           content += `${des}${url}`
           break
         } case 'markdown':
@@ -1317,7 +1323,12 @@ const adapter = new class QQBotAdapter {
             continue
           }
         case 'image': {
-          const { des, url } = imageResults.get(idx) || await this.makeMarkdownImage(data, i)
+          const imageResult = imageResults.get(idx) || await this.makeMarkdownImage(data, i)
+          if (imageResult.motionPhoto) {
+            messages.push([i])
+            break
+          }
+          const { des, url } = imageResult
           const limit = template.length % (length - 1)
 
           // 图片数量超过模板长度时
@@ -1425,6 +1436,16 @@ const adapter = new class QQBotAdapter {
 
   async compressImage(data, file) {
     try {
+      const motionPhoto = await inspectMotionPhoto(file)
+      if (motionPhoto.isMotionPhoto) {
+        Bot.makeLog('info', ['检测到 Motion Photo，跳过图片压缩', {
+          file_name: motionPhoto.fileName || 'buffer.jpg',
+          file_size: motionPhoto.size,
+          marker: motionPhoto.reason
+        }], data.self_id)
+        return file
+      }
+
       const imageLength = Number(config.imageLength)
       if (!sharp || !Number.isFinite(imageLength) || imageLength <= 0) return file
 
