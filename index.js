@@ -18,6 +18,7 @@ import {
   isCNBEnabled,
   uploadToCNB,
   getExternalImageUrl,
+  shouldUploadToImageBed,
   inspectMotionPhoto,
   prepareMarkdownImages,
   IMG_BED_STATS_MAX_DAYS,
@@ -598,14 +599,27 @@ const adapter = new class QQBotAdapter {
   }
 
   async uploadToTelegraph(data, buffer) {
-    const api = config.imgBed?.telegraph || 'https://tg.telegra.ph/upload'
+    const configuredApi = config.imgBed?.telegraph || 'https://telegra.ph/upload'
+    const api = new URL(configuredApi)
+    // tg.telegra.ph 当前返回的证书不包含该域名，兼容已有配置并切到可用主站。
+    if (api.hostname === 'tg.telegra.ph') api.hostname = 'telegra.ph'
+    api.searchParams.set('source', 'bugtracker')
+
+    const form = new FormData()
+    form.append('file', new Blob([buffer], { type: 'image/jpeg' }), 'image.jpg')
+    const res = await fetch(api, { method: 'POST', body: form })
+    const text = await res.text()
+    if (!res.ok) throw new Error(`Telegraph上传失败: HTTP ${res.status} ${text.slice(0, 200)}`)
+
+    let json
     try {
-      const form = new FormData()
-      form.append('file', new Blob([buffer], { type: 'image/jpeg' }), 'image.jpg')
-      const res = await fetch(`${api}?source=bugtracker`, { method: 'POST', body: form })
-      const json = await res.json()
-      if (json.src) return new URL(api).origin + json.src
-    } catch { }
+      json = JSON.parse(text)
+    } catch {
+      throw new Error(`Telegraph返回了无效响应: ${text.slice(0, 200)}`)
+    }
+    const result = Array.isArray(json) ? json[0] : json
+    if (!result?.src) throw new Error(`Telegraph响应缺少src: ${text.slice(0, 200)}`)
+    return new URL(result.src, api.origin).href
   }
 
   async uploadToTencentCI(data, buffer) {
@@ -874,13 +888,14 @@ const adapter = new class QQBotAdapter {
 
     let buffer
     let image
+    let localUrl = ''
     if (externalUrl) {
       image = { url: externalUrl }
     } else {
       buffer = await Bot.Buffer(source)
       image = {}
       try {
-        const localUrl = getExternalImageUrl(await Bot.fileToUrl(source))
+        localUrl = getExternalImageUrl(await Bot.fileToUrl(source))
         if (localUrl) {
           image.url = localUrl
           this.rememberLocalMarkdownImageUrl(image.url, data.self_id)
@@ -931,7 +946,7 @@ const adapter = new class QQBotAdapter {
       }
     }
 
-    if (!image.url?.startsWith?.('http')) {
+    if (shouldUploadToImageBed({ externalUrl, localUrl, currentUrl: image.url })) {
       const imgBedUrl = await this.uploadToImageBed(data, buffer)
       if (imgBedUrl) {
         image.url = imgBedUrl

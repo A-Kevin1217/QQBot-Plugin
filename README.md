@@ -139,7 +139,7 @@ pnpm install                # 让依赖版本对上
       qqchannel: # QQ频道图床(需要有频道权限的Bot)
         botQQ: '123456' # 机器人QQ号
         channelId: '611441080' # 频道ID
-      telegraph: https://tg.telegra.ph/upload # Telegraph上传API
+      telegraph: https://telegra.ph/upload # Telegraph上传API
       default: '' # 所有图床失败时的备用图片URL
       cache_ttl: 600 # Redis缓存过期时间(秒)
     ```

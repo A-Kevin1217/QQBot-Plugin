@@ -20,6 +20,14 @@ function getExternalImageUrl (source) {
   }
 }
 
+function shouldUploadToImageBed ({ externalUrl = '', localUrl = '', currentUrl = '' } = {}) {
+  if (externalUrl) return false
+
+  const normalizedCurrentUrl = String(currentUrl || '')
+  if (!/^https?:\/\//i.test(normalizedCurrentUrl)) return true
+  return Boolean(localUrl) && normalizedCurrentUrl === String(localUrl)
+}
+
 function getImageSource (input) {
   if (Buffer.isBuffer(input) || input instanceof URL || typeof input === 'string') return input
   if (!input || typeof input !== 'object') return input
@@ -123,6 +131,7 @@ async function prepareMarkdownImages (adapter, data, msg) {
 
 export {
   getExternalImageUrl,
+  shouldUploadToImageBed,
   inspectMotionPhoto,
   prepareMarkdownImages
 }

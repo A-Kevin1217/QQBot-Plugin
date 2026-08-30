@@ -5,7 +5,7 @@ import Runtime from '../../../lib/plugins/runtime.js'
 import Handler from '../../../lib/plugins/handler.js'
 import { config, configSave, refConfig } from './config.js'
 import { isCNBEnabled, uploadToCNB } from './cnb.js'
-import { getExternalImageUrl, inspectMotionPhoto, prepareMarkdownImages } from './markdownImage.js'
+import { getExternalImageUrl, shouldUploadToImageBed, inspectMotionPhoto, prepareMarkdownImages } from './markdownImage.js'
 import {
   MAX_DAYS as IMG_BED_STATS_MAX_DAYS,
   normalizeBed,
@@ -27,6 +27,7 @@ export {
   isCNBEnabled,
   uploadToCNB,
   getExternalImageUrl,
+  shouldUploadToImageBed,
   inspectMotionPhoto,
   prepareMarkdownImages,
   IMG_BED_STATS_MAX_DAYS,

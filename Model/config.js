@@ -46,7 +46,7 @@ let { config, configSave } = await makeConfig('QQBot', {
     qqchannel: { botQQ: '', channelId: '' },
     bilibili: '',
     huaban: '',
-    telegraph: 'https://tg.telegra.ph/upload',
+    telegraph: 'https://telegra.ph/upload',
     default: '',
     cache_ttl: 600
   },

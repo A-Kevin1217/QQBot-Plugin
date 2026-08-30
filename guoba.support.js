@@ -586,7 +586,7 @@ const schemas = [
     label: 'Telegraph 地址',
     bottomHelpMessage: 'Telegraph 上传接口地址',
     component: 'Input',
-    componentProps: { placeholder: 'https://tg.telegra.ph/upload' },
+    componentProps: { placeholder: 'https://telegra.ph/upload' },
   },
 
   // ========== CNB 图床 ==========
