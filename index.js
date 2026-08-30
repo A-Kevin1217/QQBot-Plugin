@@ -34,7 +34,8 @@ import { getMessageMeta } from './Model/eventMeta.js'
 import { patchSessionManager } from './lib/sessionManagerPatch.js'
 import {
   sendWithGroupMarkdownImageRetry,
-  uploadRichMediaByParts
+  uploadRichMediaByParts,
+  getQQApiErrorCode
 } from './lib/richMediaUpload.js'
 import {
   buildGroupBotStateFields,
@@ -61,6 +62,77 @@ function adaptSendableForSDK(msg) {
   if (msg.data && typeof msg.data === 'object') return msg
   const { type, ...rest } = msg
   return { type, data: rest }
+}
+
+function endpointPathToSendTarget(endpointPath) {
+  if (typeof endpointPath !== 'string') return endpointPath
+  const match = endpointPath.match(/^\/(channels|dms|v2\/users|v2\/groups)\/([^/]+)$/)
+  if (!match) throw new Error(`不支持的消息发送地址: ${endpointPath}`)
+  const targetId = decodeURIComponent(match[2])
+  switch (match[1]) {
+    case 'channels': return { kind: 'guild', channelId: targetId }
+    case 'dms': return { kind: 'dm', guildId: targetId }
+    case 'v2/users': return { kind: 'private', userId: targetId }
+    case 'v2/groups': return { kind: 'group', groupId: targetId }
+  }
+}
+
+function normalizeSDKSendTarget(target) {
+  if (typeof target === 'string') return endpointPathToSendTarget(target)
+  if (!target || typeof target !== 'object') throw new Error('消息发送目标不能为空')
+  if (target.kind === 'private') return { kind: 'private', userId: target.userId ?? target.user_id }
+  if (target.kind === 'group') return { kind: 'group', groupId: target.groupId ?? target.group_id }
+  if (target.kind === 'guild') return { kind: 'guild', channelId: target.channelId ?? target.channel_id }
+  if (target.kind === 'dm') return { kind: 'dm', guildId: target.guildId ?? target.guild_id }
+  throw new Error(`不支持的消息发送目标: ${JSON.stringify(target)}`)
+}
+
+function normalizeSDKFileBuildResult(buildResult = {}) {
+  const filePayload = { ...(buildResult.filePayload || {}) }
+  if (filePayload.file == null && filePayload.file_buffer == null && filePayload.file_data != null) {
+    if (Buffer.isBuffer(filePayload.file_data) || filePayload.file_data instanceof Uint8Array) {
+      filePayload.file_buffer = Buffer.from(filePayload.file_data)
+    } else {
+      const data = String(filePayload.file_data)
+      filePayload.file = data.startsWith('base64://') ? data : `base64://${data}`
+    }
+  }
+  return { ...buildResult, filePayload }
+}
+
+function getSDKUploadFallbackData(buildResult = {}) {
+  const payload = buildResult.filePayload || {}
+  return payload.file_buffer ?? payload.file ?? payload.url
+}
+
+function getSDKStreamContent(message) {
+  if (typeof message === 'string') return { text: message, contentType: 'text' }
+  if (!Array.isArray(message) && (!message || typeof message !== 'object')) return { text: '', contentType: 'text' }
+  const items = Array.isArray(message) ? message : [message]
+  let contentType = 'text'
+  const text = items.map(item => {
+    if (!item || typeof item !== 'object') return ''
+    const data = item.data && typeof item.data === 'object' ? item.data : item
+    if (item.type === 'markdown') {
+      contentType = 'markdown'
+      return data.content || ''
+    }
+    if (item.type === 'text') return data.text || ''
+    return ''
+  }).join('')
+  return { text, contentType }
+}
+
+async function * splitSDKStreamText(text, chunkSize, delayMs) {
+  const chars = Array.from(text)
+  const size = Math.max(1, Number(chunkSize) || Math.ceil(chars.length / 2) || 1)
+  const delay = Math.max(0, Number(delayMs) || 0)
+  for (let index = 0; index < chars.length; index += size) {
+    yield chars.slice(index, index + size).join('')
+    if (index + size < chars.length && delay > 0) {
+      await new Promise(resolve => setTimeout(resolve, delay))
+    }
+  }
 }
 
 function flattenReceivedMessage(msg) {
@@ -2642,28 +2714,24 @@ const adapter = new class QQBotAdapter {
         actualRecallTime
       }], data.self_id)
 
-      const result = await this.uploadFileToQQ(
-        data,
-        target_id,
-        target_type,
-        actualFile,
-        actualName,
-        actualForceChunk
+      const target = target_type === 'group'
+        ? { kind: 'group', groupId: target_id }
+        : { kind: 'private', userId: target_id }
+      const filePayload = { file_type: 4, file_name: actualName }
+      if (typeof actualFile === 'string' && actualFile.startsWith('http')) filePayload.url = actualFile
+      else filePayload.file = actualFile
+
+      const uploaded = actualForceChunk
+        ? await this.uploadFileToQQ(data, target_id, target_type, actualFile, actualName, true)
+        : await data.bot.sdk.messageService.uploadFile(target, { filePayload })
+      const messagePayload = { msg_type: 7, media: { file_info: uploaded.file_info } }
+      if (data.message_id) messagePayload.msg_id = data.message_id
+
+      const sendResult = await data.bot.sdk.messageService.sendRegularMessage(
+        `/v2/${target_type}s/${target_id}`,
+        { messagePayload, contentType: 'application/json', brief: `<file:${actualName || ''}>` },
+        {}
       )
-
-      const messageUrl = `/v2/${target_type}s/${target_id}/messages`
-      const messageData = {
-        msg_type: 7,
-        media: { file_info: result.file_info }
-      }
-
-      if (data.message_id) {
-        messageData.msg_id = data.message_id
-      }
-
-      Bot.makeLog('debug', ['发送文件消息', messageUrl, messageData], data.self_id)
-
-      const { data: sendResult } = await data.bot.sdk.request.post(messageUrl, messageData)
 
       Bot.makeLog('debug', ['文件消息发送成功', sendResult], data.self_id)
 
@@ -2891,7 +2959,7 @@ const adapter = new class QQBotAdapter {
     let code = responseData?.err_code ?? responseData?.code
     let message = rawMessage
 
-    // qq-official-bot@1.2.3 的响应拦截器会重新创建 Error，未保留 response。
+    // SDK 响应拦截器可能只在 Error.message 中保留接口错误码。
     // 从 `failed with code(CODE): MESSAGE` 中恢复结构化错误信息。
     if (code == null && typeof rawMessage === 'string') {
       const match = rawMessage.match(/failed with code\(([^)]+)\):\s*(.*)$/s)
@@ -3009,7 +3077,12 @@ const adapter = new class QQBotAdapter {
   }
 
   sendWakeUp(data, message) {
-    return this.sendMsg(data, msg => data.bot.sdk.messageService.sendRecallMessage(`/v2/users/${data.user_id}`, msg), message)
+    return this.sendMsg(data, msg => data.bot.sdk.messageService.sendPrivateMessage(
+      data.user_id,
+      adaptSendableForSDK(msg),
+      {},
+      { wakeup: true }
+    ), message)
   }
 
   async sendInputNotify(data, input_second) {
@@ -3024,17 +3097,6 @@ const adapter = new class QQBotAdapter {
     }
   }
 
-  async groupManageRequest(id, method, url, body) {
-    try {
-      const res = method === 'get' && body
-        ? await Bot[id].sdk.request[method](url, { params: body })
-        : await Bot[id].sdk.request[method](url, body)
-      return res?.data ?? res
-    } catch (err) {
-      throw err
-    }
-  }
-
   toGroupManageOpenid(id, value) {
     value = String(value ?? '').replace(`${id}${this.sep}`, '')
     const idx = value.lastIndexOf(':')
@@ -3043,12 +3105,12 @@ const adapter = new class QQBotAdapter {
 
   getGroupInfo(id, group_openid) {
     group_openid = this.toGroupManageOpenid(id, group_openid)
-    return this.groupManageRequest(id, 'get', `/v2/groups/${group_openid}/info`)
+    return Bot[id].sdk.groupService.getInfo(group_openid)
   }
 
   getGroupBotState(id, group_openid) {
     group_openid = this.toGroupManageOpenid(id, group_openid)
-    return this.groupManageRequest(id, 'get', `/v2/groups/${group_openid}/bot_state`)
+    return Bot[id].sdk.groupService.getBotState(group_openid)
   }
 
   getCachedGroupBotState(id, group_id) {
@@ -3138,7 +3200,8 @@ const adapter = new class QQBotAdapter {
     group_openid = this.toGroupManageOpenid(id, group_openid)
     member_openid = this.toGroupManageOpenid(id, member_openid)
     try {
-      return await this.groupManageRequest(id, 'get', `/v2/groups/${group_openid}/members/${member_openid}`)
+      const { data } = await Bot[id].sdk.request.get(`/v2/groups/${group_openid}/members/${member_openid}`)
+      return data
     } catch (err) {
       if (!isQQBotApiNoAccessError(err)) throw err
       const groupKey = `${id}${this.sep}${group_openid}`
@@ -3159,7 +3222,7 @@ const adapter = new class QQBotAdapter {
 
   getGroupMuteState(id, group_openid) {
     group_openid = this.toGroupManageOpenid(id, group_openid)
-    return this.groupManageRequest(id, 'get', `/v2/groups/${group_openid}/restrict_chat_setting`)
+    return Bot[id].sdk.groupService.getMuteSetting(group_openid)
   }
 
   setGroupBan(id, group_openid, member_openid, duration = 0) {
@@ -3170,7 +3233,7 @@ const adapter = new class QQBotAdapter {
       member_openid: this.toGroupManageOpenid(id, member_openid),
       mute_expire_at: time > 0 ? new Date(Date.now() + time * 1000).toISOString() : ''
     }]
-    return this.groupManageRequest(id, 'post', `/v2/groups/${group_openid}/restrict_chat_setting`, { members })
+    return Bot[id].sdk.groupService.setMemberMute(group_openid, members)
   }
 
   normalizeGroupJoinRequest(id, group_openid, item = {}, rawEvent) {
@@ -3262,7 +3325,7 @@ const adapter = new class QQBotAdapter {
     const body = {}
     if (cursor) body.cursor = cursor
     if (limit) body.limit = limit
-    const result = await this.groupManageRequest(id, 'get', `/v2/groups/${group_openid}/join_request_list`, body)
+    const result = await Bot[id].sdk.groupService.getJoinRequests(group_openid, body)
     const list = Array.isArray(result?.list) ? result.list : []
     const normalizedList = list.map(item => {
       const request = this.normalizeGroupJoinRequest(id, group_openid, item)
@@ -3334,7 +3397,7 @@ const adapter = new class QQBotAdapter {
     if (options.join_request_id) body.join_request_id = options.join_request_id
     if (body.op === 'decline' && options.reject_reason) body.reject_reason = String(options.reject_reason)
     if (body.op === 'decline' && options.add_to_member_blacklist) body.add_to_member_blacklist = true
-    return this.groupManageRequest(id, 'post', `/v2/groups/${group_openid}/approval_join_request/${member_openid}`, body)
+    return Bot[id].sdk.groupService.approveJoinRequest(group_openid, member_openid, body)
   }
 
   setGroupAddRequest(id, flagOrGroupOpenid, arg2, arg3, arg4, arg5, arg6) {
@@ -3360,30 +3423,29 @@ const adapter = new class QQBotAdapter {
   }
 
   getJoinApprovalStrategies(id, cursor = '', limit = 20) {
-    const qs = new URLSearchParams()
-    if (cursor) qs.set('cursor', cursor)
-    qs.set('limit', limit)
-    return this.groupManageRequest(id, 'get', `/v2/groups/join_approval_strategy?${qs}`)
+    const options = { limit }
+    if (cursor) options.cursor = cursor
+    return Bot[id].sdk.groupService.getJoinApprovalStrategies(options)
   }
 
   createJoinApprovalStrategy(id, body) {
-    return this.groupManageRequest(id, 'post', '/v2/groups/join_approval_strategy', body)
+    return Bot[id].sdk.groupService.createJoinApprovalStrategy(body)
   }
 
   updateJoinApprovalStrategy(id, strategy_id, body) {
-    return this.groupManageRequest(id, 'patch', `/v2/groups/join_approval_strategy/${strategy_id}`, body)
+    return Bot[id].sdk.groupService.updateJoinApprovalStrategy(strategy_id, body)
   }
 
   deleteJoinApprovalStrategy(id, strategy_id) {
-    return this.groupManageRequest(id, 'delete', `/v2/groups/join_approval_strategy/${strategy_id}`)
+    return Bot[id].sdk.groupService.deleteJoinApprovalStrategy(strategy_id)
   }
 
   executeJoinApprovalStrategy(id, strategy_id) {
-    return this.groupManageRequest(id, 'post', `/v2/groups/join_approval_strategy/${strategy_id}/execute`)
+    return Bot[id].sdk.groupService.executeJoinApprovalStrategy(strategy_id)
   }
 
   updateJoinApprovalWhitelist(id, strategy_id, op, whitelist_users) {
-    return this.groupManageRequest(id, 'post', `/v2/groups/join_approval_strategy/${strategy_id}/whitelist_users`, { op, whitelist_users })
+    return Bot[id].sdk.groupService.updateJoinApprovalWhitelist(strategy_id, { op, whitelist_users })
   }
 
   sendGuildMsg(data, msg, event) {
@@ -4351,31 +4413,6 @@ const adapter = new class QQBotAdapter {
     disableAxiosEnvProxy(sdk.request)
     patchGroupRequestEventParser(sdk)
 
-    const originalMessageUploadFile = sdk.messageService?.uploadFile?.bind(sdk.messageService)
-    if (originalMessageUploadFile) {
-      sdk.messageService.uploadFile = async (endpointPath, buildResult) => {
-        const endpointMatch = String(endpointPath).match(/^\/v2\/(users|groups)\/([^/]+)$/)
-        const filePayload = buildResult?.filePayload || {}
-        const fileData = filePayload.file_data
-          ? `base64://${filePayload.file_data}`
-          : filePayload.url
-        if (!endpointMatch || !fileData) return originalMessageUploadFile(endpointPath, buildResult)
-
-        const targetType = endpointMatch[1] === 'groups' ? 'group' : 'user'
-        const uploadResult = await this.uploadFileToQQ(
-          { bot: { sdk }, self_id: id },
-          endpointMatch[2],
-          targetType,
-          fileData,
-          filePayload.file_name,
-          false,
-          filePayload.file_type
-        )
-        if (!uploadResult?.file_info) throw new Error('富媒体上传成功但未返回 file_info')
-        return { file_info: uploadResult.file_info }
-      }
-    }
-
     const originalDispatchEvent = sdk.dispatchEvent?.bind(sdk)
     if (originalDispatchEvent) {
       sdk.dispatchEvent = (event, wsRes) => {
@@ -4389,243 +4426,181 @@ const adapter = new class QQBotAdapter {
       }
     }
 
-    {
-      const StreamInputMode = { REPLACE: 'replace' }
-      const StreamInputState = { GENERATING: 1, DONE: 10 }
-      const StreamContentType = { TEXT: 'text', MARKDOWN: 'markdown' }
+    const originalMessageUploadFile = sdk.messageService?.uploadFile?.bind(sdk.messageService)
+    const originalMessageSendMessage = sdk.messageService?.sendMessage?.bind(sdk.messageService)
+    const originalMessageSendRegularMessage = sdk.messageService?.sendRegularMessage?.bind(sdk.messageService)
 
-      function extractText(message) {
-        if (typeof message === 'string') return message
-        if (Array.isArray(message)) {
-          return message.map(item => {
-            if (!item || typeof item !== 'object') return ''
-            const d = item.data
-            if (item.type === 'markdown') return (d?.content ?? item.content) || ''
-            if (item.type === 'text') return (d?.text ?? item.text) || ''
-            return ''
-          }).join('')
-        }
-        return ''
-      }
+    if (originalMessageUploadFile) {
+      sdk.messageService.uploadFile = async (target, buildResult) => {
+        const normalizedTarget = normalizeSDKSendTarget(target)
+        const normalizedBuildResult = normalizeSDKFileBuildResult(buildResult)
 
-      function getStreamSourcePayload(buildResult) {
-        const payload = buildResult?.messagePayload || {}
-        if (payload.markdown?.content) {
-          return {
-            content: String(payload.markdown.content),
-            contentType: StreamContentType.MARKDOWN,
-            payload
-          }
-        }
-        if (payload.content) {
-          return {
-            content: String(payload.content),
-            contentType: StreamContentType.TEXT,
-            payload
-          }
-        }
-        return { content: '', contentType: StreamContentType.TEXT, payload }
-      }
-
-      async function postStreamPart(sdk, endpointPath, req) {
         try {
-          return await sdk.request.post(`${endpointPath}/stream_messages`, req)
-        } catch (e) {
-          const code = e.message?.match(/code\((\d+)\)/)?.[1]
-          if (code === '40034105' && req.event_id?.startsWith?.('INTERACTION_CREATE:')) {
-            return await sdk.request.post(`${endpointPath}/stream_messages`, {
-              ...req,
-              event_id: req.event_id.replace(/^INTERACTION_CREATE:/, '')
-            })
-          }
-          throw e
+          return await originalMessageUploadFile(normalizedTarget, normalizedBuildResult)
+        } catch (error) {
+          const targetType = normalizedTarget?.kind === 'group' ? 'group' : normalizedTarget?.kind === 'private' ? 'user' : ''
+          const targetId = normalizedTarget?.kind === 'group' ? normalizedTarget.groupId : normalizedTarget?.kind === 'private' ? normalizedTarget.userId : ''
+          const fileData = getSDKUploadFallbackData(normalizedBuildResult)
+          if (!targetType || !targetId || fileData == null) throw error
+
+          Bot.makeLog('warn', ['SDK 富媒体上传失败，切换适配器分片回退', {
+            target: normalizedTarget,
+            code: getQQApiErrorCode(error),
+            error: error.message
+          }], id)
+          const uploadResult = await adapterInstance.uploadFileToQQ(
+            { bot: { sdk }, self_id: id },
+            targetId,
+            targetType,
+            fileData,
+            normalizedBuildResult.filePayload?.file_name,
+            false,
+            normalizedBuildResult.filePayload?.file_type
+          )
+          if (!uploadResult?.file_info) throw new Error('富媒体上传成功但未返回 file_info')
+          return { file_info: uploadResult.file_info }
         }
       }
+    }
 
-      async function sendStreamMessage(sdk, endpointPath, message, source = {}, options = {}) {
-        const { MessageBuilder } = _require('qq-official-bot/lib/message/builder.js')
-        const buildResult = await new MessageBuilder(
-          sdk.config?.appid,
-          !endpointPath.startsWith('/v2'),
-          source
-        ).build(message)
-        const streamSource = getStreamSourcePayload(buildResult)
-        let content = streamSource.content || extractText(message)
-        if (!content || typeof content !== 'string') throw new Error('流式消息内容必须是字符串')
-        const contentType = streamSource.content ? streamSource.contentType : StreamContentType.MARKDOWN
-        const chunkSize = Math.max(1, Number(options.chunkSize) || Math.ceil(content.length / 2) || 1)
-        const delay = Math.max(0, Number(options.delay) || 0)
-        const chars = Array.from(content)
-        const baseReq = {
-          input_mode: StreamInputMode.REPLACE,
-          content_type: contentType,
-          msg_seq: streamSource.payload.msg_seq
-        }
-        if (streamSource.payload.event_id) baseReq.event_id = streamSource.payload.event_id
-        else if (streamSource.payload.msg_id) baseReq.msg_id = streamSource.payload.msg_id
-        if (streamSource.payload.is_wakeup) baseReq.is_wakeup = true
-
-        let streamMsgId = null
-        let index = 0
-        let currentContent = ''
-        let lastResult = null
-        for (let i = 0; i < chars.length; i += chunkSize) {
-          const chunk = chars.slice(i, i + chunkSize).join('')
-          currentContent += chunk
-          const req = {
-            ...baseReq,
-            input_mode: StreamInputMode.REPLACE,
-            input_state: i + chunkSize >= chars.length ? StreamInputState.DONE : StreamInputState.GENERATING,
-            content_raw: currentContent,
-            index: index++
-          }
-          if (streamMsgId) req.stream_msg_id = streamMsgId
-          const response = await postStreamPart(sdk, endpointPath, req)
-          lastResult = response.data || null
-          if (!streamMsgId && response.data?.id) streamMsgId = response.data.id
-          if (i + chunkSize < chars.length && delay > 0) await new Promise(r => setTimeout(r, delay))
-        }
-        return {
-          id: streamMsgId || lastResult?.id,
-          timestamp: Date.now() / 1000,
-          brief: buildResult.brief,
-          content: currentContent,
-          ext_info: lastResult?.ext_info,
-          remain_msg_len: lastResult?.remain_msg_len
-        }
-      }
-
-      {
-        const origPrivate = sdk.sendPrivateMessage?.bind(sdk)
-        if (origPrivate) {
-          sdk.sendPrivateMessage = async function (user_id, message, source = {}, options = {}) {
-            if (options.stream) {
-              const text = extractText(message)
-              logger.info(`[QQBot] 流式消息: stream=${options.stream}, 文本长度=${text.length}`)
-              if (text) {
-                try { return await sendStreamMessage(sdk, `/v2/users/${user_id}`, message, source, options) }
-                catch (e) { logger.error(`流式发送失败，转为普通消息: ${e.message}`) }
-              } else {
-                logger.warn('[QQBot] 流式消息提取文本为空，转为普通消息', JSON.stringify(message).slice(0, 200))
-              }
-            }
-            return origPrivate(user_id, message, source, options)
-          }
-        }
-      }
-
-      const { createRequire } = await import('node:module')
-      const _require = createRequire(import.meta.url)
-      const { MessageBuilder } = _require('qq-official-bot/lib/message/builder.js')
-      async function sendRegularMessageWithMeta(endpointPath, buildResult, options = {}) {
-        const { data: result } = await sendWithGroupMarkdownImageRetry({
-          endpointPath,
-          messagePayload: buildResult.messagePayload,
-          send: () => this.request.post(endpointPath + '/messages', buildResult.messagePayload, {
-            headers: {
-              'Content-Type': buildResult.contentType
-            },
-            timeout: options.timeout || 10000
-          }),
-          onRetry: async retryContext => {
-            const switched = await options.onMarkdownImageRetry?.(retryContext)
-            const { attempt, delayMs, code } = retryContext
-            if (!switched) {
-              logger.warn(`[QQBot] 群聊 Markdown 图片转存失败(code(${code}))，${delayMs}ms 后进行第 ${attempt} 次重试`)
-            }
-            return switched === true
-          }
-        })
-        if (this.isAuditResult(result)) {
-          return {
-            id: result.message_audit.audit_id,
-            timestamp: Date.now() / 1000,
-            audit_status: 'pending',
-            reason: '',
-            brief: buildResult.brief
-          }
-        }
-        return {
-          id: result.id,
-          timestamp: Date.now() / 1000,
-          brief: buildResult.brief,
-          ext_info: result.ext_info,
-          msg_idx: result.msg_idx
-        }
-      }
-      sdk.messageService.sendMessage = async function (endpointPath, message, source, options) {
-        const buildResult = await new MessageBuilder(
-          this.appid,
-          !endpointPath.startsWith('/v2'),
-          source
-        ).build(message)
-        if (source?.smallbtn && buildResult.messagePayload?.keyboard?.content) {
+    if (originalMessageSendRegularMessage) {
+      const applyPayloadOptions = (buildResult, options = {}) => {
+        const qqbotOptions = options.__qqbot || {}
+        if (qqbotOptions.smallbtn && buildResult.messagePayload?.keyboard?.content) {
           buildResult.messagePayload.keyboard.content.style = { font_size: 'small' }
         }
-        if (buildResult.isFile) {
-          buildResult.messagePayload.media = await this.uploadFile(endpointPath, buildResult)
-        }
-        let imageBedFallbackAttempted = false
-        const sendOptions = {
-          ...(options || {}),
-          onMarkdownImageRetry: async ({ code }) => {
-            if (imageBedFallbackAttempted) return false
-            imageBedFallbackAttempted = true
-
-            const fallback = await adapterInstance.switchLocalMarkdownImagesToImageBed(
-              { self_id: id, bot: Bot[id] },
-              buildResult.messagePayload
-            )
-            if (!fallback.replaced) return false
-
-            buildResult.messagePayload = fallback.message
-            if (source?.smallbtn && buildResult.messagePayload?.keyboard?.content) {
-              buildResult.messagePayload.keyboard.content.style = { font_size: 'small' }
-            }
-            if (buildResult.messagePayload?.markdown && typeof buildResult.messagePayload.markdown === 'object') {
-              buildResult.messagePayload.markdown.force_verify_image_resource = true
-            }
-            logger.info(`[QQBot] 本地图片被平台拒绝(code(${code}))，已自动切换图床并重发: ${fallback.urls.join(', ')}`)
-            return true
-          }
-        }
-        try {
-          return await sendRegularMessageWithMeta.call(this, endpointPath, buildResult, sendOptions)
-        } catch (e) {
-          const code = e.message?.match(/code\((\d+)\)/)?.[1]
-          const eventId = buildResult.messagePayload?.event_id
-          if (code === '40034105' && eventId?.startsWith?.('INTERACTION_CREATE:')) {
-            const retryBuildResult = {
-              ...buildResult,
-              messagePayload: {
-                ...buildResult.messagePayload,
-                event_id: eventId.replace(/^INTERACTION_CREATE:/, '')
-              }
-            }
-            return await sendRegularMessageWithMeta.call(this, endpointPath, retryBuildResult, sendOptions)
-          }
-          if (buildResult.messagePayload && ['22007', '40034025', '40034128'].includes(code)) {
-            logger.warn(`被动回复失败(code(${code}))，正在尝试通过主动消息发送`)
-            delete buildResult.messagePayload.msg_id
-            delete buildResult.messagePayload.event_id
-            return await sendRegularMessageWithMeta.call(this, endpointPath, buildResult, sendOptions)
-          }
-          throw e
-        }
-      }
-
-      sdk.messageService.sendRecallMessage = async function (endpointPath, message, source) {
-        const messageBuilder = new MessageBuilder(this.appid, !endpointPath.startsWith('/v2'), source)
-        const buildResult = await messageBuilder.build(message)
-        if (buildResult.messagePayload) {
+        if (qqbotOptions.wakeup && buildResult.messagePayload) {
           delete buildResult.messagePayload.msg_id
           delete buildResult.messagePayload.event_id
           buildResult.messagePayload.is_wakeup = true
         }
-        if (buildResult.isFile) {
-          buildResult.messagePayload.media = await this.uploadFile(endpointPath, buildResult)
+      }
+
+      sdk.messageService.sendRegularMessage = async function (endpointPath, buildResult, options = {}) {
+        applyPayloadOptions(buildResult, options)
+        const sdkOptions = { ...options }
+        delete sdkOptions.__qqbot
+
+        const sendCurrentMessage = () => sendWithGroupMarkdownImageRetry({
+          endpointPath,
+          messagePayload: buildResult.messagePayload,
+          send: () => originalMessageSendRegularMessage(endpointPath, buildResult, sdkOptions),
+          onRetry: async ({ code, attempt, delayMs }) => {
+            const fallback = await adapterInstance.switchLocalMarkdownImagesToImageBed(
+              { self_id: id, bot: Bot[id] },
+              buildResult.messagePayload
+            )
+            if (!fallback.replaced) {
+              logger.warn(`[QQBot] 群聊 Markdown 图片转存失败(code(${code}))，${delayMs}ms 后进行第 ${attempt} 次重试`)
+              return false
+            }
+            buildResult.messagePayload = fallback.message
+            applyPayloadOptions(buildResult, options)
+            logger.info(`[QQBot] 本地图片被平台拒绝(code(${code}))，已自动切换图床并重发: ${fallback.urls.join(', ')}`)
+            return true
+          }
+        })
+
+        try {
+          return await sendCurrentMessage()
+        } catch (error) {
+          const code = getQQApiErrorCode(error)
+          const eventId = buildResult.messagePayload?.event_id
+          if (code === '40034105' && eventId?.startsWith?.('INTERACTION_CREATE:')) {
+            buildResult.messagePayload.event_id = eventId.replace(/^INTERACTION_CREATE:/, '')
+            return sendCurrentMessage()
+          }
+          const hasPassiveContext = Boolean(buildResult.messagePayload?.msg_id || buildResult.messagePayload?.event_id)
+          if (hasPassiveContext && ['22007', '40034025', '40034128'].includes(code)) {
+            logger.warn(`被动回复失败(code(${code}))，正在尝试通过主动消息发送`)
+            delete buildResult.messagePayload.msg_id
+            delete buildResult.messagePayload.event_id
+            return sendCurrentMessage()
+          }
+          throw error
         }
-        return await sendRegularMessageWithMeta.call(this, endpointPath, buildResult)
+      }
+    }
+
+    if (originalMessageSendMessage) {
+      sdk.messageService.sendMessage = async function (target, message, source, options = {}) {
+        const normalizedTarget = normalizeSDKSendTarget(target)
+        const qqbotOptions = { ...(options.__qqbot || {}) }
+        if (source?.smallbtn) qqbotOptions.smallbtn = true
+        if (options.wakeup) qqbotOptions.wakeup = true
+        return originalMessageSendMessage(
+          normalizedTarget,
+          adaptSendableForSDK(message),
+          source,
+          { ...options, __qqbot: qqbotOptions }
+        )
+      }
+    }
+
+    const originalSendPrivateMessage = sdk.sendPrivateMessage?.bind(sdk)
+    if (originalSendPrivateMessage) {
+      sdk.sendPrivateMessage = async function (userId, message, source = {}, options = {}) {
+        const adaptedMessage = adaptSendableForSDK(message)
+        if (options.stream) {
+          const streamContent = getSDKStreamContent(message)
+          logger.info(`[QQBot] 流式消息: stream=${options.stream}, 文本长度=${streamContent.text.length}`)
+          if (streamContent.text) {
+            const streamOptions = {
+              inputMode: 'replace',
+              contentType: streamContent.contentType,
+              source,
+              eventId: source?.event_id,
+              msgId: source?.id,
+              isWakeup: options.wakeup === true
+            }
+            const streamChunks = () => splitSDKStreamText(
+              streamContent.text,
+              options.chunkSize ?? config.chunkSize,
+              options.delay ?? config.delay
+            )
+            try {
+              return await sdk.messageService.sendPrivateStream(userId, streamChunks(), streamOptions)
+            } catch (error) {
+              const code = getQQApiErrorCode(error)
+              if (code === '40034105' && streamOptions.eventId?.startsWith?.('INTERACTION_CREATE:')) {
+                try {
+                  return await sdk.messageService.sendPrivateStream(userId, streamChunks(), {
+                    ...streamOptions,
+                    eventId: streamOptions.eventId.replace(/^INTERACTION_CREATE:/, '')
+                  })
+                } catch (retryError) {
+                  logger.error(`流式发送重试失败，转为普通消息: ${retryError.message}`)
+                }
+              } else {
+                logger.error(`流式发送失败，转为普通消息: ${error.message}`)
+              }
+            }
+          } else {
+            logger.warn('[QQBot] 流式消息提取文本为空，转为普通消息', JSON.stringify(message).slice(0, 200))
+          }
+        }
+
+        if (sdk.messageService?.sendPrivateMessage) {
+          return sdk.messageService.sendPrivateMessage(userId, adaptedMessage, source, {
+            ...options,
+            stream: false
+          })
+        }
+        return originalSendPrivateMessage(userId, adaptedMessage, source)
+      }
+    }
+
+    if (sdk.messageService?.sendMessage) {
+      sdk.messageService.sendRecallMessage = async function (endpointPath, message, source = {}) {
+        const cleanSource = { ...source }
+        delete cleanSource.id
+        delete cleanSource.event_id
+        return this.sendMessage(
+          normalizeSDKSendTarget(endpointPath),
+          adaptSendableForSDK(message),
+          cleanSource,
+          { wakeup: true }
+        )
       }
     }
 
