@@ -16,7 +16,7 @@ TRSS-Yunzai QQBot 适配器 插件
 
 | 使用上区别 | `main` 分支 | `sdk-1.0.3` 分支 |
 | --- | --- | --- |
-| 底层依赖 | `qq-official-bot@^1.3.0` | `qq-official-bot@1.0.3` |
+| 底层依赖 | `qq-official-bot@1.3.0` | `qq-official-bot@1.0.3` |
 | 安装/更新依赖 | 第一次拉取后要 `pnpm install` | 跟着老版本走，不用动 |
 | 收/发普通消息 | 正常 | 正常 |
 | 收/发 Markdown / 按钮 | 已适配 | 已稳定使用 |
