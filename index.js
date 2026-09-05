@@ -3393,14 +3393,17 @@ const adapter = new class QQBotAdapter {
     return { list, next_cursor: nextCursor }
   }
 
-  approvalJoinRequest(id, group_openid, member_openid, options = {}) {
+  async approvalJoinRequest(id, group_openid, member_openid, options = {}) {
     group_openid = this.toGroupManageOpenid(id, group_openid)
     member_openid = this.toGroupManageOpenid(id, member_openid)
     const body = { op: options.op ?? (options.approve ? 'approve' : 'decline') }
     if (options.join_request_id) body.join_request_id = options.join_request_id
     if (body.op === 'decline' && options.reject_reason) body.reject_reason = String(options.reject_reason)
     if (body.op === 'decline' && options.add_to_member_blacklist) body.add_to_member_blacklist = true
-    return Bot[id].sdk.groupService.approveJoinRequest(group_openid, member_openid, body)
+    // SDK 的 approveJoinRequest 成功时只 await 不返回（resolve 即成功，失败会 throw），
+    // 这里显式返回 true，避免上层把 undefined 误判为处理失败
+    await Bot[id].sdk.groupService.approveJoinRequest(group_openid, member_openid, body)
+    return true
   }
 
   setGroupAddRequest(id, flagOrGroupOpenid, arg2, arg3, arg4, arg5, arg6) {
