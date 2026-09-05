@@ -41,6 +41,11 @@ import {
   buildGroupRoleFields,
   normalizeGroupMemberRole
 } from './lib/groupRole.js'
+import {
+  cacheRemoteMedia,
+  cleanupMediaFiles,
+  IMG_DIR
+} from './lib/media.js'
 
 const QQBot = await (async () => {
   for (const pkg of ['qq-official-bot', 'qq-group-bot']) {
@@ -521,7 +526,8 @@ const adapter = new class QQBotAdapter {
   }
 
   async uploadToBilibili(data, buffer) {
-    const cookie = config.imgBed?.bilibili
+    const cfg = config.imgBed?.bilibili
+    const cookie = typeof cfg === 'string' ? cfg : cfg?.cookie
     if (!cookie) return
     try {
       const bili_jct = cookie.match(/bili_jct=([^;]+)/)?.[1]
@@ -541,7 +547,8 @@ const adapter = new class QQBotAdapter {
   }
 
   async uploadToHuaban(data, buffer) {
-    const cookie = config.imgBed?.huaban
+    const cfg = config.imgBed?.huaban
+    const cookie = typeof cfg === 'string' ? cfg : cfg?.cookie
     if (!cookie) return
     try {
       const boundary = '----' + crypto.randomBytes(16).toString('hex')
@@ -564,7 +571,8 @@ const adapter = new class QQBotAdapter {
   }
 
   async uploadToTelegraph(data, buffer) {
-    const configuredApi = config.imgBed?.telegraph || 'https://telegra.ph/upload'
+    const cfg = config.imgBed?.telegraph
+    const configuredApi = (typeof cfg === 'string' ? cfg : cfg?.api) || 'https://telegra.ph/upload'
     const api = new URL(configuredApi)
     // tg.telegra.ph 当前返回的证书不包含该域名，兼容已有配置并切到可用主站。
     if (api.hostname === 'tg.telegra.ph') api.hostname = 'telegra.ph'
@@ -730,14 +738,21 @@ const adapter = new class QQBotAdapter {
       return url
     }
 
+    // 每个内置图床的开关：config.imgBed.<key>.enable，兼容旧的字符串形式（非空即启用）。
+    const bedEnabled = key => {
+      const value = config.imgBed?.[key]
+      if (typeof value === 'string') return Boolean(value)
+      return value?.enable !== false
+    }
+
     const beds = [
       ['cnb', 'CNB', isCNBEnabled(config.imgBed?.cnb), () => uploadToCNB(data, buffer, config.imgBed?.cnb), config.imgBed?.cnb?.stats !== false],
-      ['bilibili', 'B站', !!config.imgBed?.bilibili, () => this.uploadToBilibili(data, buffer), true],
-      ['huaban', '花瓣网', !!config.imgBed?.huaban, () => this.uploadToHuaban(data, buffer), true],
-      ['cos', 'COS', !!(config.imgBed?.cos?.createUploadKeyUrl && config.imgBed?.cos?.cosBucketUrlPrefix), () => this.uploadToCOS(data, buffer), true],
-      ['qqchannel', 'QQ频道', !!(config.imgBed?.qqchannel?.botQQ && config.imgBed?.qqchannel?.channelId), () => this.uploadToQQChannel(data, buffer), true],
-      ['telegraph', 'Telegraph', !!config.imgBed?.telegraph, () => this.uploadToTelegraph(data, buffer), true],
-      ['tencentci', '腾讯云CI', true, () => this.uploadToTencentCI(data, buffer), true]
+      ['bilibili', 'B站', bedEnabled('bilibili'), () => this.uploadToBilibili(data, buffer), true],
+      ['huaban', '花瓣网', bedEnabled('huaban'), () => this.uploadToHuaban(data, buffer), true],
+      ['cos', 'COS', bedEnabled('cos') && !!(config.imgBed?.cos?.createUploadKeyUrl && config.imgBed?.cos?.cosBucketUrlPrefix), () => this.uploadToCOS(data, buffer), true],
+      ['qqchannel', 'QQ频道', bedEnabled('qqchannel') && !!(config.imgBed?.qqchannel?.botQQ && config.imgBed?.qqchannel?.channelId), () => this.uploadToQQChannel(data, buffer), true],
+      ['telegraph', 'Telegraph', bedEnabled('telegraph'), () => this.uploadToTelegraph(data, buffer), true],
+      ['tencentci', '腾讯云CI', bedEnabled('tencentci'), () => this.uploadToTencentCI(data, buffer), true]
     ]
 
     const recordStat = async (record) => {
@@ -911,6 +926,20 @@ const adapter = new class QQBotAdapter {
       }
     }
 
+    // 自定义图床（显式开启后优先）：用户通过 Bot.imageToUrl 定义自己的图床上传。
+    if (config.imgBed?.custom?.enable === true && typeof Bot.imageToUrl === 'function') {
+      try {
+        const customUrl = await Bot.imageToUrl(source, {
+          self_id: data.self_id,
+          name: imageMeta.name || imageData.name
+        })
+        if (customUrl) image.url = String(customUrl)
+      } catch (err) {
+        Bot.makeLog('debug', ['自定义图床上传失败，回退内置图床', source, err], data.self_id)
+      }
+    }
+
+    // 内置多图床兜底（自定义图床已产出公网地址时 shouldUploadToImageBed 会自动跳过）
     if (shouldUploadToImageBed({ externalUrl, localUrl, currentUrl: image.url })) {
       const imgBedUrl = await this.uploadToImageBed(data, buffer)
       if (imgBedUrl) {
@@ -919,17 +948,6 @@ const adapter = new class QQBotAdapter {
         if (defaultImageUrl.startsWith('http') && imgBedUrl === defaultImageUrl) {
           await this.#setMarkdownImageSizeFromSource(data, image, defaultImageUrl, '备用图片')
         }
-      }
-    }
-
-    if (!image.url?.startsWith?.('http') && typeof Bot.imageToUrl === 'function') {
-      try {
-        image.url = await Bot.imageToUrl(source, {
-          self_id: data.self_id,
-          name: imageMeta.name || imageData.name
-        })
-      } catch (err) {
-        Bot.makeLog('debug', ['自定义图片图床上传失败', source, err], data.self_id)
       }
     }
 
@@ -1087,6 +1105,11 @@ const adapter = new class QQBotAdapter {
   }
 
   async makeRawMarkdownMsg(data, msg) {
+    // 自定义 markdown 覆写钩子：用户定义 Bot.makeMarkdownMsg 时整段接管构造逻辑。
+    if (typeof Bot.makeMarkdownMsg === 'function') {
+      return Bot.makeMarkdownMsg(data, msg)
+    }
+
     const messages = []
     const button = []
     const files = []
@@ -4018,6 +4041,13 @@ const adapter = new class QQBotAdapter {
 
     data.bot.stat.recv_msg_cnt++
     Bot[data.self_id].dau.setDau('receive_msg', data)
+
+    // 本地媒体缓存（可选）：把收到的远程图片/视频下载到本地并通过 local-media 端点自托管。
+    // 需配置 mediaCache.autoDownload = true 且 mediaCache.baseUrl 为公网前缀才会生效。
+    if (config.mediaCache?.enable !== false && config.mediaCache?.autoDownload && config.mediaCache?.baseUrl) {
+      data.message = await cacheRemoteMedia(data.message, config.mediaCache.baseUrl)
+    }
+
     const emSubType = data.message_type === 'group' && data.sub_type === 'at' ? '' : data.sub_type
     Bot.em([data.post_type, data.message_type, emSubType].filter(Boolean).join('.'), {
       ...data,
@@ -4736,7 +4766,33 @@ const adapter = new class QQBotAdapter {
     req.res.send({ code: 0 })
   }
 
+  // local-media 端点：对外提供本地媒体缓存里的图片/视频，URL 形如 /QQBot/media/{name}
+  serveLocalMedia(req) {
+    try {
+      const url = String(req?.url || req?.path || req?.originalUrl || '')
+      const name = decodeURIComponent(url.split('?')[0].split('/').filter(Boolean).pop() || '')
+      if (!name || !/^[\w.-]+$/.test(name)) {
+        req?.res?.status?.(400)?.send?.('bad request')
+        return
+      }
+      const filePath = join(IMG_DIR, name)
+      if (!fs.existsSync(filePath)) {
+        req?.res?.status?.(404)?.send?.('not found')
+        return
+      }
+      if (typeof req?.res?.sendFile === 'function') {
+        req.res.sendFile(filePath)
+      } else {
+        req?.res?.send?.(fs.readFileSync(filePath))
+      }
+    } catch (err) {
+      try { req?.res?.status?.(500)?.send?.('error') } catch { }
+    }
+  }
+
   async load() {
+    Bot.express.use(`/${this.name}/media`, this.serveLocalMedia.bind(this))
+    Bot.express.quiet?.push?.(`/${this.name}/media`)
     Bot.express.use(`/${this.name}`, this.makeWebHook.bind(this))
     Bot.express.quiet?.push?.(`/${this.name}`)
     for (const token of config.token) {
@@ -4769,6 +4825,11 @@ export class QQBotAdapter extends plugin {
       name: 'QQBotAdapter',
       dsc: 'QQBot 适配器设置',
       event: 'message',
+      task: {
+        name: 'QQBot媒体文件清理',
+        cron: '0 3 * * *',
+        fnc: () => cleanupMediaFiles()
+      },
       rule: [
         {
           reg: /^#q+bot(帮助|help)$/i,

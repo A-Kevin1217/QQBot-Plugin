@@ -547,6 +547,12 @@ const schemas = [
     component: 'Switch',
   },
   {
+    field: 'imgBed.custom.enable',
+    label: '启用自定义图床',
+    bottomHelpMessage: '启用 Bot.imageToUrl 自定义图床（优先于内置图床）',
+    component: 'Switch',
+  },
+  {
     field: 'imgBed.default',
     label: '兜底返回图',
     bottomHelpMessage: '默认使用的图床类型',
@@ -559,6 +565,7 @@ const schemas = [
         { label: '花瓣', value: 'huaban' },
         { label: 'Telegraph', value: 'telegraph' },
         { label: 'CNB', value: 'cnb' },
+        { label: '腾讯云CI', value: 'tencentci' },
       ],
     },
   },
@@ -569,24 +576,60 @@ const schemas = [
     component: 'InputNumber',
     componentProps: { min: 60, max: 86400 },
   },
+
+  // ========== B站图床 ==========
+  { label: 'B站图床', component: 'SOFT_GROUP_BEGIN' },
   {
-    field: 'imgBed.bilibili',
+    field: 'imgBed.bilibili.enable',
+    label: '启用 B站',
+    bottomHelpMessage: '是否启用 B站图床',
+    component: 'Switch',
+  },
+  {
+    field: 'imgBed.bilibili.cookie',
     label: 'B站 Cookie',
     bottomHelpMessage: 'B站图床使用的 Cookie',
     component: 'InputPassword',
   },
+
+  // ========== 花瓣图床 ==========
+  { label: '花瓣图床', component: 'SOFT_GROUP_BEGIN' },
   {
-    field: 'imgBed.huaban',
-    label: '花瓣 Token',
-    bottomHelpMessage: '花瓣图床使用的 Token',
-    component: 'InputPassword',
+    field: 'imgBed.huaban.enable',
+    label: '启用 花瓣',
+    bottomHelpMessage: '是否启用花瓣图床',
+    component: 'Switch',
   },
   {
-    field: 'imgBed.telegraph',
+    field: 'imgBed.huaban.cookie',
+    label: '花瓣 Cookie',
+    bottomHelpMessage: '花瓣图床使用的 Cookie',
+    component: 'InputPassword',
+  },
+
+  // ========== Telegraph 图床 ==========
+  { label: 'Telegraph 图床', component: 'SOFT_GROUP_BEGIN' },
+  {
+    field: 'imgBed.telegraph.enable',
+    label: '启用 Telegraph',
+    bottomHelpMessage: '是否启用 Telegraph 图床',
+    component: 'Switch',
+  },
+  {
+    field: 'imgBed.telegraph.api',
     label: 'Telegraph 地址',
     bottomHelpMessage: 'Telegraph 上传接口地址',
     component: 'Input',
     componentProps: { placeholder: 'https://telegra.ph/upload' },
+  },
+
+  // ========== 腾讯云CI 图床 ==========
+  { label: '腾讯云CI图床', component: 'SOFT_GROUP_BEGIN' },
+  {
+    field: 'imgBed.tencentci.enable',
+    label: '启用 腾讯云CI',
+    bottomHelpMessage: '是否启用腾讯云CI（公共演示端点）图床',
+    component: 'Switch',
   },
 
   // ========== CNB 图床 ==========
@@ -634,6 +677,12 @@ const schemas = [
   // ========== QQ频道图床 ==========
   { label: 'QQ频道图床', component: 'SOFT_GROUP_BEGIN' },
   {
+    field: 'imgBed.qqchannel.enable',
+    label: '启用 QQ频道',
+    bottomHelpMessage: '是否启用 QQ频道图床',
+    component: 'Switch',
+  },
+  {
     field: 'imgBed.qqchannel.botQQ',
     label: 'Bot QQ号',
     bottomHelpMessage: '用于 QQ 频道图床的 Bot QQ号',
@@ -650,6 +699,12 @@ const schemas = [
 
   // ========== COS 图床 ==========
   { label: '腾讯云 COS', component: 'SOFT_GROUP_BEGIN' },
+  {
+    field: 'imgBed.cos.enable',
+    label: '启用 COS',
+    bottomHelpMessage: '是否启用腾讯云 COS 图床',
+    component: 'Switch',
+  },
   {
     field: 'imgBed.cos.createUploadKeyUrl',
     label: '上传密钥接口',
