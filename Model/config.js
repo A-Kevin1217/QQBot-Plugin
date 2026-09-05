@@ -82,67 +82,25 @@ function refConfig () {
 }
 
 // ===== 旧配置自动迁移 =====
-// 把 imgBed 各图床统一为 { enable, ... } 对象结构，兼容旧的字符串写法，
-// 并补齐 custom / tencentci / mediaCache 默认结构。幂等：已是新结构则不做任何改动。
+// 只处理 makeConfig 的 _.merge 深合并无法覆盖的旧结构：bilibili/huaban/telegraph
+// 历史上是字符串写法，需转成 { enable, cookie/api } 对象（旧字符串非空即视为启用）。
+// 其余新键（custom/tencentci/mediaCache 及各 enable 开关、字段）由 makeConfig
+// 自动从默认值补全并落盘，此处无需处理。幂等：无字符串旧值则不做任何改动。
 {
   let dirty = false
   const imgBed = config.imgBed || (config.imgBed = {})
 
-  // 自定义图床（默认关闭）
-  if (typeof imgBed.custom !== 'object' || imgBed.custom === null) {
-    imgBed.custom = { enable: false }
-    dirty = true
-  }
-
-  // 把某个图床归一化为对象，旧字符串形式转为 { enable, 字段 } 结构
-  const asBed = (key, legacyField, defaultValue = '') => {
+  const migrateStringBed = (key, field, defaultValue = '') => {
     const value = imgBed[key]
     if (typeof value === 'string') {
-      imgBed[key] = { enable: Boolean(value), ...(legacyField ? { [legacyField]: value || defaultValue } : {}) }
-      dirty = true
-    } else if (value == null || typeof value !== 'object') {
-      imgBed[key] = {}
-      dirty = true
-    }
-    return imgBed[key]
-  }
-
-  const bilibili = asBed('bilibili', 'cookie')
-  if (bilibili.cookie === undefined) { bilibili.cookie = ''; dirty = true }
-  if (bilibili.enable === undefined) { bilibili.enable = Boolean(bilibili.cookie); dirty = true }
-
-  const huaban = asBed('huaban', 'cookie')
-  if (huaban.cookie === undefined) { huaban.cookie = ''; dirty = true }
-  if (huaban.enable === undefined) { huaban.enable = Boolean(huaban.cookie); dirty = true }
-
-  const telegraph = asBed('telegraph', 'api', 'https://telegra.ph/upload')
-  if (telegraph.api === undefined) { telegraph.api = 'https://telegra.ph/upload'; dirty = true }
-  if (telegraph.enable === undefined) { telegraph.enable = Boolean(telegraph.api); dirty = true }
-
-  const cos = asBed('cos')
-  if (cos.createUploadKeyUrl === undefined) { cos.createUploadKeyUrl = 'https://ci-exhibition.cloud.tencent.com/samples/createUploadKey'; dirty = true }
-  if (cos.cosBucketUrlPrefix === undefined) { cos.cosBucketUrlPrefix = ''; dirty = true }
-  if (cos.enable === undefined) { cos.enable = Boolean(cos.createUploadKeyUrl && cos.cosBucketUrlPrefix); dirty = true }
-
-  const qqchannel = asBed('qqchannel')
-  if (qqchannel.botQQ === undefined) { qqchannel.botQQ = ''; dirty = true }
-  if (qqchannel.channelId === undefined) { qqchannel.channelId = ''; dirty = true }
-  if (qqchannel.enable === undefined) { qqchannel.enable = Boolean(qqchannel.botQQ && qqchannel.channelId); dirty = true }
-
-  const tencentci = asBed('tencentci')
-  if (tencentci.enable === undefined) { tencentci.enable = true; dirty = true }
-
-  // mediaCache 默认结构
-  if (config.mediaCache == null || typeof config.mediaCache !== 'object') {
-    config.mediaCache = {}
-    dirty = true
-  }
-  for (const [key, value] of Object.entries({ enable: true, autoDownload: false, baseUrl: '', saveDays: 3, maxSize: 10 })) {
-    if (config.mediaCache[key] === undefined) {
-      config.mediaCache[key] = value
+      imgBed[key] = { enable: Boolean(value), [field]: value || defaultValue }
       dirty = true
     }
   }
+
+  migrateStringBed('bilibili', 'cookie')
+  migrateStringBed('huaban', 'cookie')
+  migrateStringBed('telegraph', 'api', 'https://telegra.ph/upload')
 
   if (dirty) await configSave()
 }
