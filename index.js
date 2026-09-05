@@ -2,7 +2,6 @@ import _ from 'lodash'
 import fs from 'node:fs'
 import QRCode from 'qrcode'
 import { join } from 'node:path'
-import { createRequire } from 'node:module'
 import imageSize from 'image-size'
 import crypto from 'node:crypto'
 import { randomUUID } from 'node:crypto'
@@ -32,7 +31,6 @@ import {
 } from './Model/index.js'
 import { qrRegister, generateQRCode, BindStatus } from './Model/qr-auth.js'
 import { getMessageMeta } from './Model/eventMeta.js'
-import { patchSessionManager } from './lib/sessionManagerPatch.js'
 import {
   sendWithGroupMarkdownImageRetry,
   uploadRichMediaByParts,
@@ -43,8 +41,6 @@ import {
   buildGroupRoleFields,
   normalizeGroupMemberRole
 } from './lib/groupRole.js'
-
-const require = createRequire(import.meta.url)
 
 const QQBot = await (async () => {
   for (const pkg of ['qq-official-bot', 'qq-group-bot']) {
@@ -399,37 +395,6 @@ function getJoinRequestComment(value, verifyInfo) {
     if (qa.length) return qa.join('\n')
   }
   return String(getJoinRequestField(value, 'comment', 'message') ?? '')
-}
-
-function patchGroupRequestEventParser(sdk) {
-  for (const pkg of ['qq-official-bot', 'qq-group-bot']) {
-    try {
-      const eventsMod = require(`${pkg}/lib/events/index.js`)
-      const QQEvent = eventsMod?.QQEvent
-      const EventParserMap = eventsMod?.EventParserMap
-      if (!QQEvent) continue
-      if (!QQEvent.GROUP_JOIN_REQUEST) QQEvent.GROUP_JOIN_REQUEST = 'request.group'
-      if (EventParserMap && !EventParserMap.has('request.group')) {
-        EventParserMap.set('request.group', function (event, result) {
-          const source = result || {}
-          const sourceVerifyInfo = getJoinRequestVerifyInfo(source)
-          const eventVerifyInfo = getJoinRequestVerifyInfo(event)
-          const verifyInfo = Object.keys(sourceVerifyInfo).length ? sourceVerifyInfo : eventVerifyInfo
-          return Object.assign(result || {}, {
-            sub_type: source.sub_type || 'add',
-            user_id: getJoinRequestField(source, 'member_openid', 'user_id') ?? getJoinRequestField(event, 'member_openid', 'user_id'),
-            group_id: getJoinRequestField(source, 'group_openid', 'group_id') ?? getJoinRequestField(event, 'group_openid', 'group_id'),
-            raw_user_id: getJoinRequestField(source, 'member_openid', 'raw_user_id') ?? getJoinRequestField(event, 'member_openid', 'raw_user_id'),
-            join_request_id: getJoinRequestField(source, 'join_request_id', 'flag') ?? getJoinRequestField(event, 'join_request_id', 'flag'),
-            verify_info: verifyInfo,
-            comment: getJoinRequestComment(source, verifyInfo) || getJoinRequestComment(event, verifyInfo),
-            risk_tips: getJoinRequestField(source, 'risk_tips') ?? getJoinRequestField(event, 'risk_tips') ?? ''
-          })
-        })
-      }
-      return
-    } catch {}
-  }
 }
 
 const startTime = new Date()
@@ -4206,6 +4171,12 @@ const adapter = new class QQBotAdapter {
       setTimeout(() => this.noticeEventCache.delete(noticeEventKey), 5 * 60 * 1000)
     }
 
+    // SDK 1.3.0 将加群申请作为 notice.group.join_request 事件下发（不再走 request 事件），
+    // 转发到申请处理逻辑，统一产出 request.group.add，供 RobotManagement 等插件消费。
+    if (event.notice_type === 'group' && event.sub_type === 'join_request') {
+      return this.makeGroupJoinRequest(id, event)
+    }
+
     // QQ 官方事件中 group.increase/decrease 表示机器人自身被加群/移出群，
     // 而 Yunzai/ICQQ 使用这两个事件表示普通成员进退群。为避免语义冲突，
     // 机器人自身的群变更使用独立的 bot.increase/bot.decrease 事件。
@@ -4426,7 +4397,6 @@ const adapter = new class QQBotAdapter {
 
     const sdk = new QQBot(opts)
     disableAxiosEnvProxy(sdk.request)
-    patchGroupRequestEventParser(sdk)
 
     const originalDispatchEvent = sdk.dispatchEvent?.bind(sdk)
     if (originalDispatchEvent) {
@@ -4718,7 +4688,6 @@ const adapter = new class QQBotAdapter {
         Bot.makeLog(i, args, id)
       }
     }
-    patchSessionManager(Bot[id].sdk.sessionManager)
 
     try {
       if (token[4] === "2") {
@@ -4737,7 +4706,6 @@ const adapter = new class QQBotAdapter {
 
     Bot[id].sdk.on('message', event => this.makeMessage(id, event))
     Bot[id].sdk.on('notice', event => this.makeNotice(id, event))
-    Bot[id].sdk.on('request', event => this.makeGroupJoinRequest(id, event))
 
     Bot.makeLog("mark", `${this.name}(${this.id}) ${this.version} ${Bot[id].nickname} 已连接`, id)
     Bot.em(`connect.${id}`, { self_id: id })
