@@ -720,6 +720,42 @@ const schemas = [
     componentProps: { placeholder: 'https://xxx.cos.ap-xxx.myqcloud.com' },
   },
 
+  // ========== 本地媒体缓存 ==========
+  { label: '本地媒体缓存', component: 'SOFT_GROUP_BEGIN' },
+  {
+    field: 'mediaCache.enable',
+    label: '启用媒体缓存',
+    bottomHelpMessage: '本地媒体缓存功能总开关',
+    component: 'Switch',
+  },
+  {
+    field: 'mediaCache.autoDownload',
+    label: '自动下载远程媒体',
+    bottomHelpMessage: '收到图片/视频时下载到本地，并改写为自托管 URL（需配置下方服务公网地址）',
+    component: 'Switch',
+  },
+  {
+    field: 'mediaCache.baseUrl',
+    label: '服务公网地址',
+    bottomHelpMessage: 'Yunzai 服务对外可访问地址，如 https://bot.example.com，URL 自动拼成 {地址}/QQBot/media/{文件}',
+    component: 'Input',
+    componentProps: { placeholder: 'https://bot.example.com' },
+  },
+  {
+    field: 'mediaCache.saveDays',
+    label: '保留天数',
+    bottomHelpMessage: '本地媒体文件保留天数，超过未访问将自动清理（1-30）',
+    component: 'InputNumber',
+    componentProps: { min: 1, max: 30 },
+  },
+  {
+    field: 'mediaCache.maxSize',
+    label: '单文件上限(MB)',
+    bottomHelpMessage: '超过该大小的远程媒体不下载缓存',
+    component: 'InputNumber',
+    componentProps: { min: 1, max: 100 },
+  },
+
   // ========== 流式消息 ==========
   { label: '流式消息', component: 'SOFT_GROUP_BEGIN' },
   {

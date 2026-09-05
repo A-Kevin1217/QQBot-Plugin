@@ -59,6 +59,7 @@ let { config, configSave } = await makeConfig('QQBot', {
   mediaCache: {
     enable: true,
     autoDownload: false,
+    // 你的 Yunzai 服务对外公网地址，如 https://bot.example.com（自动拼接 /QQBot/media/ 路径）
     baseUrl: '',
     saveDays: 3,
     maxSize: 10

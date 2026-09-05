@@ -4043,9 +4043,11 @@ const adapter = new class QQBotAdapter {
     Bot[data.self_id].dau.setDau('receive_msg', data)
 
     // 本地媒体缓存（可选）：把收到的远程图片/视频下载到本地并通过 local-media 端点自托管。
-    // 需配置 mediaCache.autoDownload = true 且 mediaCache.baseUrl 为公网前缀才会生效。
+    // 需 mediaCache.autoDownload = true 且 mediaCache.baseUrl 配置为 Yunzai 服务公网地址才会生效，
+    // URL 自动拼成 {baseUrl}/QQBot/media/{文件}，QQ 端可直接访问（端点已加入 skip_auth）。
     if (config.mediaCache?.enable !== false && config.mediaCache?.autoDownload && config.mediaCache?.baseUrl) {
-      data.message = await cacheRemoteMedia(data.message, config.mediaCache.baseUrl)
+      const mediaBase = `${String(config.mediaCache.baseUrl).replace(/\/+$/, '')}/${this.name}/media`
+      data.message = await cacheRemoteMedia(data.message, mediaBase)
     }
 
     const emSubType = data.message_type === 'group' && data.sub_type === 'at' ? '' : data.sub_type
@@ -4791,7 +4793,9 @@ const adapter = new class QQBotAdapter {
   }
 
   async load() {
+    // local-media 端点：内容寻址的公开媒体，加入 skip_auth 以便开启 Yunzai server 鉴权后 QQ 仍可直连拉取
     Bot.express.use(`/${this.name}/media`, this.serveLocalMedia.bind(this))
+    Bot.express.skip_auth?.push?.(`/${this.name}/media`)
     Bot.express.quiet?.push?.(`/${this.name}/media`)
     Bot.express.use(`/${this.name}`, this.makeWebHook.bind(this))
     Bot.express.quiet?.push?.(`/${this.name}`)
