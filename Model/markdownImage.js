@@ -14,18 +14,41 @@ function getExternalImageUrl (source) {
 
   try {
     const url = new URL(value)
-    return url.protocol === 'http:' || url.protocol === 'https:' ? value : ''
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return ''
+    // 本机/内网地址不算「外链」：QQ 服务器拉不到，只会让 markdown 图片显示不出来。
+    // 以前只判断协议，导致 Bot.fileToUrl() 产出的 http://localhost:2536/... 被当成外链，
+    // 进而跳过了 makeBotImage()，最后落到图床 —— 图床一挂就发成默认占位图。
+    const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+    if (!host) return ''
+    if (host === 'localhost' || host.endsWith('.localhost')) return ''
+    if (host.endsWith('.local') || host.endsWith('.lan') || host.endsWith('.internal')) return ''
+    if (host === '::1' || host === '0.0.0.0') return ''
+    if (/^127\./.test(host)) return ''
+    if (/^10\./.test(host)) return ''
+    if (/^192\.168\./.test(host)) return ''
+    if (/^169\.254\./.test(host)) return ''
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return ''
+    return value
   } catch {
     return ''
   }
 }
 
 function shouldUploadToImageBed ({ externalUrl = '', localUrl = '', currentUrl = '' } = {}) {
+  // 插件自己已经给了公网直链 → 不需要图床
   if (externalUrl) return false
 
   const normalizedCurrentUrl = String(currentUrl || '')
+  // 完全没有 URL → 只能靠图床
   if (!/^https?:\/\//i.test(normalizedCurrentUrl)) return true
-  return Boolean(localUrl) && normalizedCurrentUrl === String(localUrl)
+  // 已经是公网可达地址（例如 Bot.fileToUrl() 用 server.url 拼出的
+  // https://bot.kevcore.cn/File/xxx）→ 直接用它，不必再传图床。
+  // 以前只比较 currentUrl === localUrl 就判定「这还是本地地址」，
+  // 于是把好好的公网地址又传了一遍图床 —— 图床一旦出问题（凭据过期、
+  // 存成 JSON、防盗链 403），就会把本来能正常显示的图顶坏。
+  if (getExternalImageUrl(normalizedCurrentUrl)) return false
+  // 剩下的是本机/内网地址（localhost / 192.168.x.x …）→ 需要图床
+  return true
 }
 
 function getImageSource (input) {
