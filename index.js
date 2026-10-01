@@ -47,6 +47,56 @@ import {
   IMG_DIR
 } from './lib/media.js'
 
+/**
+ * 把各种形态的图片来源统一成 image-size 能接受的 Buffer。
+ *
+ * image-size v2 只接受 ArrayBufferView，传字符串/对象会抛
+ *   The "list" argument must be an instance of SharedArrayBuffer, ArrayBuffer or ArrayBufferView
+ * （v1 是接受路径字符串的，框架把依赖升到 v2 之后旧写法就炸了，日志里表现为
+ *  「图片分辨率检测错误 / 备用图片分辨率检测错误」，且 image.width/height 拿不到值。）
+ *
+ * 解析不出来返回 null，由调用方跳过，不再往日志里刷错误。
+ */
+async function resolveImageSizeInput(source) {
+  try {
+    if (source == null) return null
+    if (Buffer.isBuffer(source)) return source
+    if (source instanceof Uint8Array) return Buffer.from(source)
+    if (source instanceof ArrayBuffer) return Buffer.from(new Uint8Array(source))
+    if (typeof source === 'string') {
+      const str = source.trim()
+      if (!str) return null
+      if (/^data:/i.test(str)) {
+        const comma = str.indexOf(',')
+        if (comma < 0) return null
+        return Buffer.from(str.slice(comma + 1), /;base64,/i.test(str) ? 'base64' : 'utf8')
+      }
+      if (/^https?:\/\//i.test(str)) {
+        const res = await fetch(str, { signal: AbortSignal.timeout(10000) })
+        if (!res.ok) return null
+        return Buffer.from(await res.arrayBuffer())
+      }
+      if (/^file:\/\//i.test(str)) {
+        try { return fs.readFileSync(new URL(str)) } catch { return null }
+      }
+      try { if (fs.existsSync(str)) return fs.readFileSync(str) } catch { }
+      return null
+    }
+    if (typeof source === 'object') {
+      // 消息段 { type: 'image', file } / { buffer } / { url } / { path }
+      for (const key of ['file', 'buffer', 'url', 'path']) {
+        if (source[key] != null) {
+          const resolved = await resolveImageSizeInput(source[key])
+          if (resolved) return resolved
+        }
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 const QQBot = await (async () => {
   for (const pkg of ['qq-official-bot', 'qq-group-bot']) {
     try {
@@ -696,7 +746,11 @@ const adapter = new class QQBotAdapter {
 
   async #setMarkdownImageSizeFromSource(data, image, source, label = '图片') {
     try {
-      const targetBuffer = Buffer.isBuffer(source) ? source : await Bot.Buffer(source)
+      const targetBuffer = await resolveImageSizeInput(source)
+      if (!targetBuffer) {
+        Bot.makeLog('debug', [`${label}分辨率检测跳过：无法解析图片来源`, source], data.self_id)
+        return false
+      }
       const size = imageSize(targetBuffer)
       image.width = size.width
       image.height = size.height
@@ -794,8 +848,20 @@ const adapter = new class QQBotAdapter {
     }
 
     Bot.makeLog('warn', ['图床上传失败，所有图床均不可用'], data.self_id)
-    const defaultImageUrl = String(config.imgBed?.default || '').trim()
-    return defaultImageUrl || undefined
+    // 先试试机器人自身图床（URL 由 QQ 托管，必定能显示）。
+    // 拿不到就返回 undefined —— 表示"没有新 URL"，交给调用方决定是否用 default 占位图。
+    // 绝不能在这里直接返回 default：调用方可能已有可用的公网 URL
+    // （如 server.url=bot.kevcore.cn 拼出的 /File/xxx），返回占位图会把它顶掉。
+    try {
+      const botImage = await this.makeBotImage(buffer)
+      if (botImage?.url) {
+        Bot.makeLog('debug', ['已改用机器人自身图床'], data.self_id)
+        return botImage.url
+      }
+    } catch (err) {
+      Bot.makeLog('debug', ['机器人自身图床不可用', err.message], data.self_id)
+    }
+    return undefined
   }
 
   rememberLocalMarkdownImageUrl(url, selfId) {
@@ -872,7 +938,7 @@ const adapter = new class QQBotAdapter {
     if (externalUrl) {
       image = { url: externalUrl }
     } else {
-      buffer = await Bot.Buffer(source)
+      buffer = await resolveImageSizeInput(source) ?? await Bot.Buffer(source)
       image = {}
       try {
         localUrl = getExternalImageUrl(await Bot.fileToUrl(source))
@@ -890,10 +956,14 @@ const adapter = new class QQBotAdapter {
 
     if (!image.width || !image.height) {
       try {
-        buffer ??= await Bot.Buffer(source)
-        const size = imageSize(buffer)
-        image.width = size.width
-        image.height = size.height
+        const sizeInput = await resolveImageSizeInput(buffer) ?? await resolveImageSizeInput(source)
+        if (!sizeInput) {
+          Bot.makeLog('debug', ['图片分辨率检测跳过：无法解析图片来源', source], data.self_id)
+        } else {
+          const size = imageSize(sizeInput)
+          image.width = size.width
+          image.height = size.height
+        }
       } catch (err) {
         Bot.makeLog('error', ['图片分辨率检测错误', source, err], data.self_id)
       }
@@ -944,8 +1014,14 @@ const adapter = new class QQBotAdapter {
       const imgBedUrl = await this.uploadToImageBed(data, buffer)
       if (imgBedUrl) {
         image.url = imgBedUrl
+      } else if (!image.url) {
+        // 图床全挂、而且自己也没有任何可用 URL —— 这时才用 default 占位图兜底。
+        // 不能无条件用占位图：否则 server.url（如 https://bot.kevcore.cn）拼出的
+        // /File/xxx 这种本来就能正常加载的公网地址会被顶掉，
+        // 用户收到的就是占位图而不是真正的内容图。
         const defaultImageUrl = String(config.imgBed?.default || '').trim()
-        if (defaultImageUrl.startsWith('http') && imgBedUrl === defaultImageUrl) {
+        if (defaultImageUrl) {
+          image.url = defaultImageUrl
           await this.#setMarkdownImageSizeFromSource(data, image, defaultImageUrl, '备用图片')
         }
       }
