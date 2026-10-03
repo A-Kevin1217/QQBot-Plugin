@@ -48,8 +48,9 @@ import {
 } from './lib/media.js'
 import {
   installTokenRefreshRetry,
+  installTokenWatchdog,
   installOfflineWatchdog,
-  stopOfflineWatchdog
+  stopWatchdog
 } from './lib/sdkEnhancer.js'
 
 /**
@@ -4825,6 +4826,10 @@ const adapter = new class QQBotAdapter {
     }
     await Bot[id].dau.init()
 
+    // 令牌看门狗：两种模式都装。SDK 的 Auth 刷新连续失败 3 次后会彻底放弃（refreshTimer 置空），
+    // 此后没人发消息就没人触发 11244 重试，只能重启。
+    Bot[id]._tokenWatchdog = installTokenWatchdog(sdk, { log: sdkLog })
+
     // 掉线看门狗：SDK 自带重连耗尽次数后接管，强制重建 WebSocket。
     // 只对 WebSocket 模式装；webhook 模式（token[4] === "2"）不连 WS，装上去会误判掉线、反而多开一条连接。
     // 注意 logout 在上面可能已被群 Bot 分支替换过，所以在这里包一层最终版本。
@@ -4834,7 +4839,9 @@ const adapter = new class QQBotAdapter {
     })
     const previousLogout = Bot[id].logout
     Bot[id].logout = () => {
-      stopOfflineWatchdog(Bot[id]._offlineWatchdog)
+      stopWatchdog(Bot[id]._tokenWatchdog)
+      stopWatchdog(Bot[id]._offlineWatchdog)
+      Bot[id]._tokenWatchdog = null
       Bot[id]._offlineWatchdog = null
       return previousLogout?.()
     }
