@@ -1,5 +1,6 @@
 db
 test
+.workbuddy-ai/
 .vscode
 templates
 **/test.js

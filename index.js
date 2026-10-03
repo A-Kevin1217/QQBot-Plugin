@@ -46,6 +46,11 @@ import {
   cleanupMediaFiles,
   IMG_DIR
 } from './lib/media.js'
+import {
+  installTokenRefreshRetry,
+  installOfflineWatchdog,
+  stopOfflineWatchdog
+} from './lib/sdkEnhancer.js'
 
 /**
  * 把各种形态的图片来源统一成 image-size 能接受的 Buffer。
@@ -4509,6 +4514,11 @@ const adapter = new class QQBotAdapter {
     const sdk = new QQBot(opts)
     disableAxiosEnvProxy(sdk.request)
 
+    // 令牌失效(11244/401)自动刷新重试：SDK 的 Auth 刷新失败 3 次后会彻底放弃，
+    // 此后所有 REST 调用都拿过期令牌，只能重启机器人。
+    const sdkLog = (level, ...args) => Bot.makeLog(level, args, id)
+    installTokenRefreshRetry(sdk, { log: sdkLog })
+
     const originalDispatchEvent = sdk.dispatchEvent?.bind(sdk)
     if (originalDispatchEvent) {
       sdk.dispatchEvent = (event, wsRes) => {
@@ -4814,6 +4824,16 @@ const adapter = new class QQBotAdapter {
       return false
     }
     await Bot[id].dau.init()
+
+    // 掉线看门狗：SDK 自带重连耗尽次数后接管，强制重建 WebSocket。
+    // 注意 logout 在上面可能已被群 Bot 分支替换过，所以在这里包一层最终版本。
+    Bot[id]._offlineWatchdog = installOfflineWatchdog(sdk, { log: sdkLog })
+    const previousLogout = Bot[id].logout
+    Bot[id].logout = () => {
+      stopOfflineWatchdog(Bot[id]._offlineWatchdog)
+      Bot[id]._offlineWatchdog = null
+      return previousLogout?.()
+    }
 
     Bot[id].sdk.on('message', event => this.makeMessage(id, event))
     Bot[id].sdk.on('notice', event => this.makeNotice(id, event))
