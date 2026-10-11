@@ -32,7 +32,7 @@ import {
 import { qrRegister, generateQRCode, BindStatus } from './Model/qr-auth.js'
 import { getMessageMeta } from './Model/eventMeta.js'
 import {
-  sendWithGroupMarkdownImageRetry,
+  sendWithMarkdownImageRetry,
   uploadRichMediaByParts,
   getQQApiErrorCode
 } from './lib/richMediaUpload.js'
@@ -472,6 +472,75 @@ const _sdkVersion = await (async () => {
   }
   return 'QQBot'
 })()
+/**
+ * 图床/本地服务产出的 URL 全部是本项目自己生成的，属于「不可信来源」：
+ * 直接抓它们的字节会带来 SSRF 面。这里只允许真实落地的公网地址，
+ * 挡掉回环、私网、链路本地和云元数据地址。
+ */
+function isFetchableImageUrl (value) {
+  try {
+    const url = new URL(String(value))
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+    const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+    if (!host) return false
+    if (host === 'localhost' || host.endsWith('.localhost')) return false
+    if (host.endsWith('.local') || host.endsWith('.lan') || host.endsWith('.internal')) return false
+    if (host === '::1' || host === '0.0.0.0') return false
+    if (/^127\./.test(host)) return false
+    if (/^10\./.test(host)) return false
+    if (/^192\.168\./.test(host)) return false
+    if (/^169\.254\./.test(host)) return false
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return false
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 从一段 markdown/文本里取出所有图片地址（含重试时注入的临时 image_url 参数） */
+function extractImageUrlsFromText (text) {
+  const urls = []
+  const push = value => {
+    if (!value) return
+    let url = value
+    try {
+      const parsed = new URL(value)
+      parsed.searchParams.delete('image_url')
+      url = parsed.toString()
+    } catch { }
+    if (isFetchableImageUrl(url) && !urls.includes(url)) urls.push(url)
+  }
+  const re = /!\[[^\]]*\]\(\s*([^)\s]+)[^)]*\)|\((https?:\/\/[^)\s]+)\)|(https?:\/\/[^\s)"']+)/g
+  let match
+  while ((match = re.exec(text))) push(match[1] || match[2] || match[3])
+  return urls
+}
+
+/** 深拷贝，避免改坏调用方仍在使用的消息对象 */
+function cloneDeepPlain (value) {
+  if (Array.isArray(value)) return value.map(cloneDeepPlain)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cloneDeepPlain(item)]))
+  }
+  return value
+}
+
+/** 在所有字符串字段里做「整条 URL 替换」 */
+function replaceUrlsDeep (value, replacements) {
+  if (typeof value === 'string') {
+    let result = value
+    for (const [from, to] of replacements) result = result.split(from).join(to)
+    return result
+  }
+  if (Array.isArray(value)) return value.map(item => replaceUrlsDeep(item, replacements))
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, replaceUrlsDeep(item, replacements)]))
+  }
+  return value
+}
+
+const IMG_BED_UPLOAD_TIMEOUT_MS = 15000
+
 let sharp
 if (config.imageLength) {
   try {
@@ -599,7 +668,11 @@ const adapter = new class QQBotAdapter {
       })
       const json = await res.json()
       if (json.code === 0 && json.data?.image_url) return json.data.image_url
-    } catch { }
+      throw new Error(`B站返回异常: code=${json.code} message=${json.message || ''}`)
+    } catch (err) {
+      // 原先这里静默吞掉：图床挂了统计里只看到一个 fail，没有任何线索。
+      Bot.makeLog('warn', ['B站图床上传失败', err?.message || err], data.self_id)
+    }
   }
 
   async uploadToHuaban(data, buffer) {
@@ -623,7 +696,10 @@ const adapter = new class QQBotAdapter {
       })
       const json = await res.json()
       if (json.key) return `https://hbimg.huabanimg.com/${json.key}`
-    } catch { }
+      throw new Error(`花瓣返回异常: ${JSON.stringify(json).slice(0, 200)}`)
+    } catch (err) {
+      Bot.makeLog('warn', ['花瓣图床上传失败', err?.message || err], data.self_id)
+    }
   }
 
   async uploadToTelegraph(data, buffer) {
@@ -636,7 +712,8 @@ const adapter = new class QQBotAdapter {
 
     const form = new FormData()
     form.append('file', new Blob([buffer], { type: 'image/jpeg' }), 'image.jpg')
-    const res = await fetch(api, { method: 'POST', body: form })
+    // telegraph 在国内经常连不上，必须给超时，否则会一直挂到 socket 默认超时
+    const res = await fetch(api, { method: 'POST', body: form, signal: AbortSignal.timeout(15000) })
     const text = await res.text()
     if (!res.ok) throw new Error(`Telegraph上传失败: HTTP ${res.status} ${text.slice(0, 200)}`)
 
@@ -715,7 +792,10 @@ const adapter = new class QQBotAdapter {
         headers: { 'Content-Type': mime, 'Authorization': json.data.uploadAuthorization }
       })
       if (uploadRes.ok) return uploadUrl
-    } catch { }
+      throw new Error(`COS上传失败: HTTP ${uploadRes.status}`)
+    } catch (err) {
+      Bot.makeLog('warn', ['COS图床上传失败', err?.message || err], data.self_id)
+    }
   }
 
   async uploadToQQChannel(data, buffer) {
@@ -739,7 +819,10 @@ const adapter = new class QQBotAdapter {
         const md5 = crypto.createHash('md5').update(buffer).digest('hex').toUpperCase()
         return `https://gchat.qpic.cn/qmeetpic/0/0-0-${md5}/0`
       }
-    } catch { }
+      throw new Error(`QQ频道图床上传失败: HTTP ${res.status}`)
+    } catch (err) {
+      Bot.makeLog('warn', ['QQ频道图床上传失败', err?.message || err], data.self_id)
+    }
   }
 
   #detectImageExt(buffer) {
@@ -827,7 +910,16 @@ const adapter = new class QQBotAdapter {
       if (!enabled) continue
       const start = Date.now()
       try {
-        const url = await upload()
+        // 单层图床必须有超时：beds 是串行回退，telegra.ph 等站点在国内可能一直挂到
+        // socket 默认超时，把被动回复的 5 分钟窗口和 5 次机会全部吃光，消息发不出去。
+        const timeout = new Promise((_, reject) => {
+          const timer = setTimeout(
+            () => reject(new Error(`图床上传超时(${IMG_BED_UPLOAD_TIMEOUT_MS}ms)`)),
+            IMG_BED_UPLOAD_TIMEOUT_MS
+          )
+          timer.unref?.()
+        })
+        const url = await Promise.race([upload(), timeout])
         if (statsEnabled) await recordStat({
           bed,
           name,
@@ -931,6 +1023,59 @@ const adapter = new class QQBotAdapter {
     }
   }
 
+  /**
+   * Markdown 图片被平台拒绝转存（304010 / 40034004）时的换床重试。
+   *
+   * 原先的重试只认 fileToUrl 产出的本地地址，而图床自己产出的地址不在那个 Map 里 ——
+   * 于是开了图床的用户一旦遇到转存失败，重试拿到 replaced: 0，就把同一张坏图原样
+   * 重发三次，必然全失败。这里改成：从消息里把候选图片地址抽出来，重新下载字节上传
+   * 到可用图床，成功一个就把整条 URL 替换掉。
+   *
+   * 只处理公网地址（isFetchableImageUrl 挡掉内网），避免把重试变成 SSRF。
+   */
+  async switchMarkdownImagesToImageBed (data, message) {
+    const payload = cloneDeepPlain(message)
+    const text = JSON.stringify(payload)
+    if (!text) return { message, replaced: 0, urls: [] }
+
+    // 候选来源：重试时挂上的 image_url 提示，其次才是消息里出现的图片地址
+    const hinted = (() => {
+      for (const item of data?.__qqbotRejectedImageUrls || []) {
+        if (isFetchableImageUrl(item)) return [item]
+      }
+      return []
+    })()
+    const candidates = hinted.length ? hinted : extractImageUrlsFromText(text)
+    const pending = candidates.filter(url => text.includes(url))
+    if (!pending.length) return { message, replaced: 0, urls: [] }
+
+    const replacements = new Map()
+    let lastError = null
+    for (const url of pending) {
+      try {
+        const buffer = await Bot.Buffer(url, { http: true, signal: AbortSignal.timeout(15000) })
+        if (!Buffer.isBuffer(buffer) || !buffer.length) throw new Error('下载到的图片为空')
+        const imageBedUrl = await this.uploadToImageBed(data, buffer)
+        if (imageBedUrl && !String(imageBedUrl).startsWith(String(url))) {
+          replacements.set(url, String(imageBedUrl))
+        }
+      } catch (err) {
+        lastError = err
+      }
+    }
+
+    if (!replacements.size) {
+      if (lastError) logger.warn(`[QQBot] Markdown 图片换床失败: ${lastError?.message || lastError}`)
+      return { message, replaced: 0, urls: [] }
+    }
+
+    return {
+      message: replaceUrlsDeep(payload, replacements),
+      replaced: replacements.size,
+      urls: [...replacements.values()]
+    }
+  }
+
   async makeMarkdownImage(data, file, summary = '图片') {
     const imageData = !Buffer.isBuffer(file) && file && typeof file === 'object' ? file : {}
     const imageMeta = imageData.data && typeof imageData.data === 'object' ? imageData.data : imageData
@@ -945,6 +1090,15 @@ const adapter = new class QQBotAdapter {
       image = { url: externalUrl }
     } else {
       buffer = await resolveImageSizeInput(source) ?? await Bot.Buffer(source)
+      // 大图在 markdown 路径同样要压缩：compressImage 此前只在普通消息路径（makeMsg）调用，
+      // markdown 图片会把原图（可能几十 MB）直接交给本地服务/图床/平台，转存失败率明显更高。
+      // 压缩成功后把 source 一并换成压缩后的 Buffer，让 fileToUrl / makeBotImage / 图床
+      // 都基于压缩后的字节，而不是压完又用原图。
+      const compressed = await this.compressImage(data, buffer)
+      if (Buffer.isBuffer(compressed) && compressed !== buffer) {
+        buffer = compressed
+        source = compressed
+      }
       image = {}
       try {
         localUrl = getExternalImageUrl(await Bot.fileToUrl(source))
@@ -1020,11 +1174,10 @@ const adapter = new class QQBotAdapter {
       const imgBedUrl = await this.uploadToImageBed(data, buffer)
       if (imgBedUrl) {
         image.url = imgBedUrl
-      } else if (!image.url) {
-        // 图床全挂、而且自己也没有任何可用 URL —— 这时才用 default 占位图兜底。
-        // 不能无条件用占位图：否则 server.url（如 https://bot.kevcore.cn）拼出的
-        // /File/xxx 这种本来就能正常加载的公网地址会被顶掉，
-        // 用户收到的就是占位图而不是真正的内容图。
+      } else {
+        // 能走到这里说明 shouldUploadToImageBed 已判定当前 image.url 不是公网可达地址
+        // （localhost / 内网，或压根没有 URL），图床又全部失败 —— 此时必须用 default 兜底。
+        // 原先的条件 `else if (!image.url)` 会留下内网地址：QQ 拉不到，用户看到裂图。
         const defaultImageUrl = String(config.imgBed?.default || '').trim()
         if (defaultImageUrl) {
           image.url = defaultImageUrl
@@ -4588,22 +4741,22 @@ const adapter = new class QQBotAdapter {
         const sdkOptions = { ...options }
         delete sdkOptions.__qqbot
 
-        const sendCurrentMessage = () => sendWithGroupMarkdownImageRetry({
+        const sendCurrentMessage = () => sendWithMarkdownImageRetry({
           endpointPath,
           messagePayload: buildResult.messagePayload,
           send: () => originalMessageSendRegularMessage(endpointPath, buildResult, sdkOptions),
           onRetry: async ({ code, attempt, delayMs }) => {
-            const fallback = await adapterInstance.switchLocalMarkdownImagesToImageBed(
+            const fallback = await adapterInstance.switchMarkdownImagesToImageBed(
               { self_id: id, bot: Bot[id] },
               buildResult.messagePayload
             )
             if (!fallback.replaced) {
-              logger.warn(`[QQBot] 群聊 Markdown 图片转存失败(code(${code}))，${delayMs}ms 后进行第 ${attempt} 次重试`)
+              logger.warn(`[QQBot] Markdown 图片换床失败(code(${code}))，${delayMs}ms 后进行第 ${attempt} 次重试`)
               return false
             }
             buildResult.messagePayload = fallback.message
             applyPayloadOptions(buildResult, options)
-            logger.info(`[QQBot] 本地图片被平台拒绝(code(${code}))，已自动切换图床并重发: ${fallback.urls.join(', ')}`)
+            logger.info(`[QQBot] Markdown 图片被平台拒绝转存(code(${code}))，已切换图床并重发: ${fallback.urls.join(', ')}`)
             return true
           }
         })
