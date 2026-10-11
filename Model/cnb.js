@@ -1,5 +1,14 @@
 import crypto from 'node:crypto'
 
+/** CNB 上传/删除请求超时：默认 fetch 无超时会一直挂到 socket 超时，拖垮整条消息发送 */
+const CNB_TIMEOUT_MS = 15000
+
+function cnbSignal (ms = CNB_TIMEOUT_MS) {
+  return typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+    ? AbortSignal.timeout(ms)
+    : undefined
+}
+
 function isCNBEnabled (cnbConfig = {}) {
   return cnbConfig.enable !== false && !!cnbConfig.token && !!cnbConfig.defaultRepo
 }
@@ -51,6 +60,7 @@ async function getUploadInfo (repo, fileName, size, cnbConfig, isImage) {
   const uploadPath = isImage ? 'imgs' : 'files'
   const response = await fetch(`${baseUrl}/${safeRepo}/-/upload/${uploadPath}`, {
     method: 'POST',
+    signal: cnbSignal(),
     headers: {
       accept: 'application/json',
       Authorization: `Bearer ${cnbConfig.token}`,
@@ -82,7 +92,7 @@ async function putFile (buffer, uploadInfo) {
   }
   if (uploadInfo.token) headers.Authorization = `Bearer ${uploadInfo.token}`
 
-  const response = await fetch(uploadUrl, { method: 'PUT', headers, body: buffer })
+  const response = await fetch(uploadUrl, { method: 'PUT', headers, body: buffer, signal: cnbSignal() })
   if (!response.ok) {
     const errorText = await response.text()
     throw new Error(`CNB文件上传失败: ${response.status} ${response.statusText} - ${errorText}`)
@@ -93,6 +103,7 @@ async function deleteCNBFile (path, cnbConfig) {
   const baseUrl = trimSlash(cnbConfig.baseUrl || 'https://api.cnb.cool')
   const response = await fetch(`${baseUrl}${path}`, {
     method: 'DELETE',
+    signal: cnbSignal(),
     headers: { Authorization: `Bearer ${cnbConfig.token}` }
   })
   if (!response.ok) {
