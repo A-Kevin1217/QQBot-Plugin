@@ -46,6 +46,7 @@ import {
   cleanupMediaFiles,
   IMG_DIR
 } from './lib/media.js'
+import { prepareMarkdownImageBytes } from './lib/markdownImageBytes.js'
 import {
   installTokenRefreshRetry,
   installTokenWatchdog,
@@ -540,6 +541,16 @@ function replaceUrlsDeep (value, replacements) {
 }
 
 const IMG_BED_UPLOAD_TIMEOUT_MS = 15000
+
+/**
+ * Markdown 图片的最大边长（像素）。
+ *
+ * 平台的 markdown 图片是「服务端下载转存」，对体量比富媒体敏感得多：超出后返回
+ * 304010 CHANGE_IMAGE_URL（图片转存错误）。而 markdown 路径原先完全没有尺寸约束：
+ * 一张 1440x5439、11MB 的渲染卡片会原样交出去，转存必失败。
+ * 富媒体走的是上传字节，不受这条限制 —— 这就是「同一张图富媒体能发、markdown 裂」的原因。
+ */
+const IMG_BED_MARKDOWN_MAX_PX = 4096
 
 let sharp
 if (config.imageLength) {
@@ -1038,14 +1049,8 @@ const adapter = new class QQBotAdapter {
     const text = JSON.stringify(payload)
     if (!text) return { message, replaced: 0, urls: [] }
 
-    // 候选来源：重试时挂上的 image_url 提示，其次才是消息里出现的图片地址
-    const hinted = (() => {
-      for (const item of data?.__qqbotRejectedImageUrls || []) {
-        if (isFetchableImageUrl(item)) return [item]
-      }
-      return []
-    })()
-    const candidates = hinted.length ? hinted : extractImageUrlsFromText(text)
+    // 候选来源：消息里出现的、公网可达的图片地址
+    const candidates = extractImageUrlsFromText(text)
     const pending = candidates.filter(url => text.includes(url))
     if (!pending.length) return { message, replaced: 0, urls: [] }
 
@@ -1090,26 +1095,39 @@ const adapter = new class QQBotAdapter {
       image = { url: externalUrl }
     } else {
       buffer = await resolveImageSizeInput(source) ?? await Bot.Buffer(source)
-      // 大图在 markdown 路径同样要压缩：compressImage 此前只在普通消息路径（makeMsg）调用，
-      // markdown 图片会把原图（可能几十 MB）直接交给本地服务/图床/平台，转存失败率明显更高。
-      // 压缩成功后把 source 一并换成压缩后的 Buffer，让 fileToUrl / makeBotImage / 图床
-      // 都基于压缩后的字节，而不是压完又用原图。
-      const compressed = await this.compressImage(data, buffer)
-      if (Buffer.isBuffer(compressed) && compressed !== buffer) {
-        buffer = compressed
-        source = compressed
-      }
-      image = {}
-      try {
-        localUrl = getExternalImageUrl(await Bot.fileToUrl(source))
-        if (localUrl) {
-          image.url = localUrl
+      // markdown 图片原先完全没有体量约束：一张渲染出来的长卡片（实测 1440x5439 / 11MB）
+      // 会原样交给本地服务、图床和平台，而平台的 markdown 图片是服务端下载转存，超出后
+      // 直接 304010 图片转存错误 —— 富媒体走上传字节所以不受影响，这就是两者表现不同的原因。
+      //
+      // 这里不再复用 compressImage：它按 `imageLength` 阈值降质，对这张 11MB 的卡片只会降到
+      // q85 约 2.4MB —— 体积下来了，5439px 的边长一点没动，平台照样拒。markdown 路径需要的是
+      // 先限边长再降质。
+      const prepped = await this.#prepareMarkdownImageBytes(data, buffer)
+      if (prepped?.buffer) {
+        buffer = prepped.buffer
+        // 有公网图床地址就直接用，不再绕本地服务 —— 转存要的就是公网可达。
+        if (prepped.url) {
+          image = { url: prepped.url }
           this.rememberLocalMarkdownImageUrl(image.url, data.self_id)
+        } else if (prepped.file) {
+          // 没上传成功（例如图床全挂）：把压缩后的字节落成本地文件，让 fileToUrl 拿到
+          // 压缩后的真实字节，而不是压缩前那张 11MB 的原图。
+          source = prepped.file
         }
-      } catch (err) {
-        Bot.makeLog('debug', ['本地图片服务转换失败', source, err], data.self_id)
       }
-      if (!image.url) image = await this.makeBotImage(buffer) || {}
+      if (!image) {
+        image = {}
+        try {
+          localUrl = getExternalImageUrl(await Bot.fileToUrl(source))
+          if (localUrl) {
+            image.url = localUrl
+            this.rememberLocalMarkdownImageUrl(image.url, data.self_id)
+          }
+        } catch (err) {
+          Bot.makeLog('debug', ['本地图片服务转换失败', source, err], data.self_id)
+        }
+        if (!image.url) image = await this.makeBotImage(buffer) || {}
+      }
     }
     image.width = Number(imageMeta.width) || null
     image.height = Number(imageMeta.height) || null
@@ -1776,6 +1794,62 @@ const adapter = new class QQBotAdapter {
       Bot.makeLog('error', ['图片压缩错误', err], data.self_id)
       return file
     }
+  }
+
+  /**
+   * 为 markdown 图片准备一份「平台转得动」的字节，并尽量直接换成公网图床地址。
+   *
+   * 解决两个叠加的问题：
+   *   1. markdown 图片原先没有体量约束，超长/超大图会被平台以 304010（图片转存错误）拒掉；
+   *   2. 图床产出的地址过去不会被复用，还得再绕一圈本地服务，而本地服务往往不是公网可达
+   *      （markdownImgScale / server.url 没配好时就是 localhost），转存同样失败。
+   *
+   * 流程：限边长 → 降质到 imageLength 以内 → 上传图床拿公网地址。
+   * 上传失败时把压缩后的字节落成本地文件返回（file），调用方据此让 fileToUrl 拿到压缩后的
+   * 真实字节，而不是压缩前那张原图。
+   *
+   * @returns {Promise<{buffer?: Buffer, url?: string, file?: string}|null>}
+   */
+  async #prepareMarkdownImageBytes (data, buffer) {
+    if (!Buffer.isBuffer(buffer) || !buffer.length) return null
+    if (!sharp) {
+      Bot.makeLog('debug', ['sharp 不可用，markdown 图片跳过尺寸处理'], data.self_id)
+      return null
+    }
+
+    const imageLength = Number(config.imageLength)
+    const prepped = await prepareMarkdownImageBytes({
+      buffer,
+      sharp,
+      maxPx: IMG_BED_MARKDOWN_MAX_PX,
+      maxBytes: Number.isFinite(imageLength) && imageLength > 0 ? imageLength * 1024 * 1024 : 0
+    })
+    // null = 尺寸体积都合规（或预处理失败），交给原有链路处理
+    if (!prepped) return null
+
+    Bot.makeLog('info', ['markdown 图片已缩放以适配平台转存', {
+      before: `${buffer.length} B`,
+      before_side: '见原图',
+      after: `${prepped.buffer.length} B`,
+      after_side: prepped.reason
+    }], data.self_id)
+
+    // 优先直接给公网图床地址：markdown 转存要的就是公网可达，少绕一层本地服务
+    try {
+      const url = await this.uploadToImageBed(data, prepped.buffer)
+      if (url) return { buffer: prepped.buffer, url: String(url) }
+    } catch (err) {
+      Bot.makeLog('warn', ['markdown 缩放后上传图床失败', err?.message || err], data.self_id)
+    }
+
+    // 图床没接住：落成本地文件，保证 fileToUrl 拿到的是缩放后的字节而不是原图
+    try {
+      const file = await Bot.fileToUrl(prepped.buffer)
+      if (file) return { buffer: prepped.buffer, file: String(file) }
+    } catch (err) {
+      Bot.makeLog('debug', ['markdown 缩放结果落盘失败', err?.message || err], data.self_id)
+    }
+    return { buffer: prepped.buffer }
   }
 
   async makeMsg(data, msg) {
