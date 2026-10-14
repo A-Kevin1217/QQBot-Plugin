@@ -41,6 +41,7 @@ import {
   buildGroupRoleFields,
   normalizeGroupMemberRole
 } from './lib/groupRole.js'
+import { buildMuteRequests } from './lib/groupMute.js'
 import {
   cacheRemoteMedia,
   cleanupMediaFiles,
@@ -3537,15 +3538,40 @@ const adapter = new class QQBotAdapter {
     return Bot[id].sdk.groupService.getMuteSetting(group_openid)
   }
 
-  setGroupBan(id, group_openid, member_openid, duration = 0) {
+  /**
+   * 批量禁言 / 解禁 / 更新到期时间（/v2/groups/{group_openid}/restrict_chat_setting）。
+   *
+   * 官方单次最多 20 个成员，超出会自动分批串行发送（保持调用顺序）。
+   * members 支持三种写法：
+   * - 'member_openid' / 123456                 → 按 defaultDuration 禁言
+   * - { member_openid, duration }              → duration 秒，>0 禁言、<=0 解禁
+   * - { member_openid, op, mute_expire_at }    → 直接透传官方语义（op: add/update/del）
+   * 也支持传单个对象而非数组。返回实际生效的成员列表（已按 openid 去重）。
+   */
+  async setGroupBanMembers(id, group_openid, members, defaultDuration) {
     group_openid = this.toGroupManageOpenid(id, group_openid)
-    const time = Number(duration)
-    const members = [{
-      op: time > 0 ? 'add' : 'del',
-      member_openid: this.toGroupManageOpenid(id, member_openid),
-      mute_expire_at: time > 0 ? new Date(Date.now() + time * 1000).toISOString() : ''
-    }]
-    return Bot[id].sdk.groupService.setMemberMute(group_openid, members)
+    const batches = buildMuteRequests(members, defaultDuration, value => this.toGroupManageOpenid(id, value))
+    if (!batches.length) return []
+    if (batches.length > 1) {
+      Bot.makeLog('debug', ['批量禁言成员超过单次上限，已自动分批', batches.map(batch => batch.length)], id)
+    }
+    const applied = []
+    for (const batch of batches) {
+      await Bot[id].sdk.groupService.setMemberMute(group_openid, batch)
+      applied.push(...batch)
+    }
+    return applied
+  }
+
+  setGroupBan(id, group_openid, member_openid, duration = 0) {
+    return this.setGroupBanMembers(id, group_openid, [{ member_openid, duration }])
+  }
+
+  /** 批量解禁：把成员列表统一标成 op=del 后走批量禁言接口 */
+  unmuteGroupMembers(id, group_openid, members) {
+    const list = (Array.isArray(members) ? members : [members]).map(item =>
+      item && typeof item === 'object' ? { ...item, op: 'del', duration: 0 } : { member_openid: item, op: 'del' })
+    return this.setGroupBanMembers(id, group_openid, list)
   }
 
   normalizeGroupJoinRequest(id, group_openid, item = {}, rawEvent) {
@@ -3862,6 +3888,9 @@ const adapter = new class QQBotAdapter {
       getMuteState: () => this.getGroupMuteState(id, i.group_id),
       getGroupMemberInfo: user_id => this.getGroupMemberInfo(id, i.group_id, openid(user_id)),
       muteMember: (user_id, duration) => this.setGroupBan(id, i.group_id, openid(user_id), duration),
+      muteMembers: (members, duration) => this.setGroupBanMembers(id, i.group_id, members, duration),
+      unmuteMember: user_id => this.setGroupBan(id, i.group_id, openid(user_id), 0),
+      unmuteMembers: members => this.unmuteGroupMembers(id, i.group_id, members),
       getJoinRequestList: (cursor, limit) => this.getGroupJoinRequestList(id, i.group_id, cursor, limit),
       approveJoinRequest: (member_openid, options) => this.approvalJoinRequest(id, i.group_id, openid(member_openid), options),
       getJoinApprovalStrategies: (cursor, limit) => this.getJoinApprovalStrategies(id, cursor, limit),
@@ -4985,6 +5014,8 @@ const adapter = new class QQBotAdapter {
       getGroupMemberInfo: (group_openid, member_openid) => this.getGroupMemberInfo(id, group_openid, member_openid),
       getGroupMuteState: group_openid => this.getGroupMuteState(id, group_openid),
       setGroupBan: (group_openid, member_openid, duration) => this.setGroupBan(id, group_openid, member_openid, duration),
+      setGroupBanMembers: (group_openid, members, duration) => this.setGroupBanMembers(id, group_openid, members, duration),
+      unmuteGroupMembers: (group_openid, members) => this.unmuteGroupMembers(id, group_openid, members),
       getGroupJoinRequestList: (group_openid, cursor, limit) => this.getGroupJoinRequestList(id, group_openid, cursor, limit),
       syncGroupJoinRequests: (group_id, options) => this.syncGroupJoinRequests(id, group_id, options),
       setGroupAddRequest: (flagOrGroupOpenid, arg2, arg3, arg4, arg5, arg6) =>
