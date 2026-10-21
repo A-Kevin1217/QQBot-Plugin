@@ -64,6 +64,13 @@ let { config, configSave } = await makeConfig('QQBot', {
     saveDays: 3,
     maxSize: 10
   },
+  // 平台素材库：图片先传到平台，拿 qqbot-media:// 引用写进 markdown。
+  // 比图床稳（发送时不走服务端下载转存），代价是单机器人 100 张配额，
+  // 所以按内容 sha1 去重，配额打满时自动淘汰最旧的 evictBatch 张。
+  mediaLibrary: {
+    enable: true,
+    evictBatch: 10
+  },
   bot: {
     sandbox: false,
     maxRetry: Infinity,

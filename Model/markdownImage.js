@@ -39,6 +39,9 @@ function shouldUploadToImageBed ({ externalUrl = '', localUrl = '', currentUrl =
   if (externalUrl) return false
 
   const normalizedCurrentUrl = String(currentUrl || '')
+  // 平台素材库引用（qqbot-media://image/v1/...）已经是平台自己的副本，
+  // 发送时不需要公网下载转存 —— 再传一遍图床既没用，还会把好好的引用顶掉。
+  if (/^qqbot-media:\/\//i.test(normalizedCurrentUrl)) return false
   // 完全没有 URL → 只能靠图床
   if (!/^https?:\/\//i.test(normalizedCurrentUrl)) return true
   // 已经是公网可达地址（例如 Bot.fileToUrl() 用 server.url 拼出的

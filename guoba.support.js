@@ -577,6 +577,22 @@ const schemas = [
     componentProps: { min: 60, max: 86400 },
   },
 
+  // ========== 素材库 ==========
+  { label: '素材库', component: 'SOFT_GROUP_BEGIN' },
+  {
+    field: 'mediaLibrary.enable',
+    label: '启用平台素材库',
+    bottomHelpMessage: 'markdown 图片先传到平台，用 qqbot-media:// 引用发送，不依赖公网地址（单机器人上限 100 张）',
+    component: 'Switch',
+  },
+  {
+    field: 'mediaLibrary.evictBatch',
+    label: '配额清理数量',
+    bottomHelpMessage: '100 张配额用满时，一次淘汰最旧的几张',
+    component: 'InputNumber',
+    componentProps: { min: 1, max: 100 },
+  },
+
   // ========== B站图床 ==========
   { label: 'B站图床', component: 'SOFT_GROUP_BEGIN' },
   {

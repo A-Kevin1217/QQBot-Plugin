@@ -49,6 +49,19 @@ import {
 } from './lib/media.js'
 import { prepareMarkdownImageBytes } from './lib/markdownImageBytes.js'
 import {
+  uploadMediaImage,
+  deleteMediaImage,
+  listAllMediaImages,
+  selectEvictionTargets,
+  hashMediaImage,
+  isMediaImageUrl,
+  isMediaImageQuotaError,
+  isMediaImageReferenceError,
+  MediaImageCache,
+  MEDIA_IMAGE_EVICT_BATCH,
+  MEDIA_IMAGE_REFRESH_MARGIN_SECONDS
+} from './lib/mediaImages.js'
+import {
   installTokenRefreshRetry,
   installTokenWatchdog,
   installOfflineWatchdog,
@@ -588,6 +601,8 @@ const adapter = new class QQBotAdapter {
     this.groupBotStateCache = new Map()
     this.groupJoinRequestSyncCache = new Map()
     this.localMarkdownImageUrls = new Map()
+    // 素材库本地索引：内容 sha1 → qqbot-media 引用，避免同一张图反复烧配额
+    this.mediaImageCache = new MediaImageCache()
     if (process.platform === "win32")
       this.sep = ""
     this.bind_user = {}
@@ -1106,7 +1121,7 @@ const adapter = new class QQBotAdapter {
       const prepped = await this.#prepareMarkdownImageBytes(data, buffer)
       if (prepped?.buffer) {
         buffer = prepped.buffer
-        // 有公网图床地址就直接用，不再绕本地服务 —— 转存要的就是公网可达。
+        // 有平台素材库引用/公网图床地址就直接用，不再绕本地服务 —— 发送时平台要能拿到图。
         if (prepped.url) {
           image = { url: prepped.url }
           this.rememberLocalMarkdownImageUrl(image.url, data.self_id)
@@ -1118,16 +1133,24 @@ const adapter = new class QQBotAdapter {
       }
       if (!image) {
         image = {}
-        try {
-          localUrl = getExternalImageUrl(await Bot.fileToUrl(source))
-          if (localUrl) {
-            image.url = localUrl
-            this.rememberLocalMarkdownImageUrl(image.url, data.self_id)
+        // 平台素材库优先于本地服务：引用由平台自己托管，不要求本机对外公网可达，
+        // 发送时也不会被 304010（图片转存错误）拦下。
+        const mediaUrl = await this.uploadToMediaLibrary(data, buffer, {
+          fileName: imageMeta.name || imageData.name
+        })
+        if (mediaUrl) image.url = mediaUrl
+        if (!image.url) {
+          try {
+            localUrl = getExternalImageUrl(await Bot.fileToUrl(source))
+            if (localUrl) {
+              image.url = localUrl
+              this.rememberLocalMarkdownImageUrl(image.url, data.self_id)
+            }
+          } catch (err) {
+            Bot.makeLog('debug', ['本地图片服务转换失败', source, err], data.self_id)
           }
-        } catch (err) {
-          Bot.makeLog('debug', ['本地图片服务转换失败', source, err], data.self_id)
+          if (!image.url) image = await this.makeBotImage(buffer) || {}
         }
-        if (!image.url) image = await this.makeBotImage(buffer) || {}
       }
     }
     image.width = Number(imageMeta.width) || null
@@ -1176,7 +1199,12 @@ const adapter = new class QQBotAdapter {
     }
 
     // 自定义图床（显式开启后优先）：用户通过 Bot.imageToUrl 定义自己的图床上传。
-    if (config.imgBed?.custom?.enable === true && typeof Bot.imageToUrl === 'function') {
+    // 已经拿到素材库引用时跳过 —— 那是平台自己的副本，换成公网地址反而多一次转存风险。
+    if (
+      config.imgBed?.custom?.enable === true
+      && typeof Bot.imageToUrl === 'function'
+      && !isMediaImageUrl(image.url)
+    ) {
       try {
         const customUrl = await Bot.imageToUrl(source, {
           self_id: data.self_id,
@@ -1205,7 +1233,7 @@ const adapter = new class QQBotAdapter {
       }
     }
 
-    Bot.makeLog('debug', [`图片URL: ${image.url}`, `来源: ${externalUrl ? '外部直链' : String(image.url).includes('File/') ? 'fileToUrl(本地服务)' : String(image.url).includes('gchat.qpic.cn') ? 'QQ CDN' : '图床'}`], data.self_id)
+    Bot.makeLog('debug', [`图片URL: ${image.url}`, `来源: ${externalUrl ? '外部直链' : isMediaImageUrl(image.url) ? '平台素材库' : String(image.url).includes('File/') ? 'fileToUrl(本地服务)' : String(image.url).includes('gchat.qpic.cn') ? 'QQ CDN' : '图床'}`], data.self_id)
 
     return {
       des: `![${summary} #${image.width || 0}px #${image.height || 0}px]`,
@@ -1798,6 +1826,173 @@ const adapter = new class QQBotAdapter {
   }
 
   /**
+   * 取当前机器人的 SDK 请求客户端。
+   * makeMarkdownImage 的 data 有时只带 { self_id }（由别的插件构造），拿不到 data.bot，
+   * 所以这里补一条从 Bot[self_id] 兜底的路径。
+   */
+  #getSdkRequest (data) {
+    return data?.bot?.sdk?.request || Bot[String(data?.self_id || '')]?.sdk?.request || null
+  }
+
+  /**
+   * 把图片字节传进平台素材库，返回 `qqbot-media://image/v1/...` 引用；失败返回空串。
+   *
+   * 为什么值得走这条路：markdown 里的公网图片是**平台服务端去下载转存**，公网不可达、
+   * 体量超限都会被 304010（图片转存错误）拦下；素材库的图是平台自己的副本，发送时不用
+   * 再下载，这条路根本不存在。
+   *
+   * 代价是配额（单机器人 100 张 / 单张 10MB / 仅 png·jpeg·gif·webp），所以：
+   *   - 按内容 sha1 去重，同一张图只传一次（缓存落盘，重启也能复用）；
+   *   - 引用是滑动过期，缓存里的 expires_at 快到期就重传，避免发送时才撞 40035009；
+   *   - 配额打满（40035007）时先淘汰最旧的若干张再重试一次。
+   */
+  async uploadToMediaLibrary (data, buffer, options = {}) {
+    const cfg = config.mediaLibrary || {}
+    if (cfg.enable === false) return ''
+    if (!Buffer.isBuffer(buffer) || !buffer.length) return ''
+    const request = this.#getSdkRequest(data)
+    if (!request) return ''
+
+    const selfId = String(data.self_id || '')
+    const { sha1 } = hashMediaImage(buffer)
+    if (!sha1) return ''
+
+    const cached = this.mediaImageCache.get(selfId, sha1)
+    if (cached?.url) {
+      const expiresAt = Number(cached.expires_at) || 0
+      if (!expiresAt || expiresAt - Date.now() / 1000 > MEDIA_IMAGE_REFRESH_MARGIN_SECONDS) {
+        this.mediaImageCache.touch(selfId, sha1)
+        return cached.url
+      }
+      // 快过期了：先摘掉缓存，下面重传成功后会把旧那张删掉还配额
+      this.mediaImageCache.remove(selfId, sha1)
+    }
+
+    const upload = () => uploadMediaImage({
+      request,
+      buffer,
+      fileName: options.fileName || '',
+      onRetry: ({ attempt, code, error }) => Bot.makeLog('warn', ['素材库上传重试', {
+        attempt,
+        code,
+        error: error?.message || String(error)
+      }], data.self_id)
+    })
+
+    let result
+    try {
+      result = await upload()
+    } catch (err) {
+      if (!isMediaImageQuotaError(err)) {
+        Bot.makeLog('warn', ['素材库上传失败，回退图床', err?.message || err], data.self_id)
+        return ''
+      }
+      const evicted = await this.#evictMediaImages(data, cfg.evictBatch)
+      if (!evicted) return ''
+      try {
+        result = await upload()
+      } catch (retryError) {
+        Bot.makeLog('warn', ['素材库清理配额后仍上传失败，回退图床', retryError?.message || retryError], data.self_id)
+        return ''
+      }
+    }
+
+    if (!result?.url) return ''
+
+    const ttl = Number(result.ttl) || 0
+    this.mediaImageCache.set(selfId, sha1, {
+      image_id: result.image_id,
+      url: result.url,
+      expires_at: ttl ? Math.floor(Date.now() / 1000) + ttl : 0
+    })
+
+    // 同一张图重传后，旧的那张（快过期的）没必要再占着配额
+    if (cached?.image_id && cached.image_id !== result.image_id) {
+      const staleId = cached.image_id
+      this.mediaImageCache.removeByImageId(selfId, staleId)
+      deleteMediaImage({ request, imageId: staleId })
+        .catch(err => Bot.makeLog('debug', ['清理素材库旧图片失败', staleId, err?.message || err], data.self_id))
+    }
+
+    Bot.makeLog('debug', ['图片已进入平台素材库', {
+      image_id: result.image_id,
+      file_name: result.file_name,
+      ttl: result.ttl
+    }], data.self_id)
+    return result.url
+  }
+
+  /**
+   * 素材库配额打满（40035007）时按上传时间淘汰最旧的若干张。
+   * 用平台的查询接口拿真实列表，而不是只看本地缓存 —— 缓存可能落后（比如别的进程传过图）。
+   */
+  async #evictMediaImages (data, batch) {
+    const request = this.#getSdkRequest(data)
+    if (!request) return 0
+    const selfId = String(data.self_id || '')
+    const count = Math.max(1, Math.floor(Number(batch) || MEDIA_IMAGE_EVICT_BATCH))
+
+    try {
+      const images = await listAllMediaImages({ request })
+      const targets = selectEvictionTargets(images, count)
+      let deleted = 0
+      for (const image of targets) {
+        try {
+          await deleteMediaImage({ request, imageId: image?.image_id })
+          this.mediaImageCache.removeByImageId(selfId, image?.image_id)
+          deleted += 1
+        } catch (err) {
+          Bot.makeLog('debug', ['素材库淘汰单张失败', image?.image_id, err?.message || err], data.self_id)
+        }
+      }
+      if (deleted) Bot.makeLog('info', [`素材库配额已满，已清理 ${deleted} 张最旧的图片`], data.self_id)
+      return deleted
+    } catch (err) {
+      Bot.makeLog('warn', ['素材库配额清理失败', err?.message || err], data.self_id)
+      return 0
+    }
+  }
+
+  /**
+   * 给 markdown 图片找一个「发送时不用平台去下载」的地址：
+   * 先试素材库引用，不行再退回图床公网地址。都失败返回空串。
+   */
+  async #publishMarkdownImage (data, buffer, options = {}) {
+    try {
+      const mediaUrl = await this.uploadToMediaLibrary(data, buffer, options)
+      if (mediaUrl) return String(mediaUrl)
+    } catch (err) {
+      Bot.makeLog('debug', ['素材库上传异常，回退图床', err?.message || err], data.self_id)
+    }
+
+    try {
+      const url = await this.uploadToImageBed(data, buffer)
+      if (url) return String(url)
+    } catch (err) {
+      Bot.makeLog('warn', ['markdown 缩放后上传图床失败', err?.message || err], data.self_id)
+    }
+    return ''
+  }
+
+  /**
+   * 素材库引用失效（40035009 已过期 / 40035010 不属于当前机器人）时，
+   * 把消息里出现的引用从本地缓存摘掉 —— 否则会一直复用这条死链接。
+   */
+  forgetMediaImagesInPayload (data, payload) {
+    let text = ''
+    try {
+      text = JSON.stringify(payload || '')
+    } catch {
+      return 0
+    }
+    if (!text.includes('qqbot-media://')) return 0
+
+    const urls = new Set(text.match(/qqbot-media:\/\/[^"'\s)\]]+/g) || [])
+    for (const url of urls) this.mediaImageCache.removeByUrl(String(data.self_id || ''), url)
+    return urls.size
+  }
+
+  /**
    * 为 markdown 图片准备一份「平台转得动」的字节，并尽量直接换成公网图床地址。
    *
    * 解决两个叠加的问题：
@@ -1835,13 +2030,9 @@ const adapter = new class QQBotAdapter {
       after_side: prepped.reason
     }], data.self_id)
 
-    // 优先直接给公网图床地址：markdown 转存要的就是公网可达，少绕一层本地服务
-    try {
-      const url = await this.uploadToImageBed(data, prepped.buffer)
-      if (url) return { buffer: prepped.buffer, url: String(url) }
-    } catch (err) {
-      Bot.makeLog('warn', ['markdown 缩放后上传图床失败', err?.message || err], data.self_id)
-    }
+    // 优先给「发送时不用平台去下载」的地址：素材库引用 > 图床公网地址，少绕一层本地服务
+    const url = await this.#publishMarkdownImage(data, prepped.buffer)
+    if (url) return { buffer: prepped.buffer, url }
 
     // 图床没接住：落成本地文件，保证 fileToUrl 拿到的是缩放后的字节而不是原图
     try {
@@ -4879,6 +5070,12 @@ const adapter = new class QQBotAdapter {
             delete buildResult.messagePayload.msg_id
             delete buildResult.messagePayload.event_id
             return sendCurrentMessage()
+          }
+          // 素材库引用失效（40035009 过期 / 40035010 不属于当前机器人）：这条链接已经没救了，
+          // 但本地缓存还留着它就会一直复用 —— 摘掉缓存，下条消息重新上传。
+          if (isMediaImageReferenceError(error)) {
+            const cleared = adapterInstance.forgetMediaImagesInPayload({ self_id: id }, buildResult.messagePayload)
+            logger.warn(`素材库图片引用失效(code(${code}))，已清除 ${cleared} 条本地缓存，下次发送会重新上传`)
           }
           throw error
         }
