@@ -1051,12 +1051,13 @@ const adapter = new class QQBotAdapter {
   }
 
   /**
-   * Markdown 图片被平台拒绝转存（304010 / 40034004）时的换床重试。
+   * Markdown 图片被平台拒绝转存（304010 / 40034004 / 40034141）时的换源重试。
    *
    * 原先的重试只认 fileToUrl 产出的本地地址，而图床自己产出的地址不在那个 Map 里 ——
    * 于是开了图床的用户一旦遇到转存失败，重试拿到 replaced: 0，就把同一张坏图原样
-   * 重发三次，必然全失败。这里改成：从消息里把候选图片地址抽出来，重新下载字节上传
-   * 到可用图床，成功一个就把整条 URL 替换掉。
+   * 重发三次，必然全失败。这里改成：从消息里把候选图片地址抽出来，重新下载字节，
+   * **先传平台素材库拿 qqbot-media 引用（不走转存）**，素材库不可用再退回图床，
+   * 成功一个就把整条 URL 替换掉。
    *
    * 只处理公网地址（isFetchableImageUrl 挡掉内网），避免把重试变成 SSRF。
    */
@@ -1076,6 +1077,13 @@ const adapter = new class QQBotAdapter {
       try {
         const buffer = await Bot.Buffer(url, { http: true, signal: AbortSignal.timeout(15000) })
         if (!Buffer.isBuffer(buffer) || !buffer.length) throw new Error('下载到的图片为空')
+        // 素材库优先：qqbot-media 引用是平台自己的副本，发送时不走「服务端下载转存」，
+        // 正好绕开 304010 / 40034141 这类转存失败；只有素材库不可用时才退回图床。
+        const mediaUrl = await this.uploadToMediaLibrary(data, buffer)
+        if (mediaUrl) {
+          replacements.set(url, mediaUrl)
+          continue
+        }
         const imageBedUrl = await this.uploadToImageBed(data, buffer)
         if (imageBedUrl && !String(imageBedUrl).startsWith(String(url))) {
           replacements.set(url, String(imageBedUrl))
@@ -5050,7 +5058,7 @@ const adapter = new class QQBotAdapter {
             }
             buildResult.messagePayload = fallback.message
             applyPayloadOptions(buildResult, options)
-            logger.info(`[QQBot] Markdown 图片被平台拒绝转存(code(${code}))，已切换图床并重发: ${fallback.urls.join(', ')}`)
+            logger.info(`[QQBot] Markdown 图片被平台拒绝转存(code(${code}))，已换图源并重发: ${fallback.urls.join(', ')}`)
             return true
           }
         })

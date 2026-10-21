@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
-import { uploadRichMediaByParts } from '../lib/richMediaUpload.js'
+import { uploadRichMediaByParts, sendWithMarkdownImageRetry } from '../lib/richMediaUpload.js'
 
 const ENDPOINT = '/v2/groups/ABCDEF'
 
@@ -210,4 +210,84 @@ test('非法的上传地址与文件类型被拒绝', async () => {
     }),
     /不支持的富媒体类型/
   )
+})
+
+function apiError (code, message = '图片转存失败') {
+  return Object.assign(new Error(`Request "/v2/groups/x/messages" failed with code(${code}): ${message}`), {
+    response: { data: { code } }
+  })
+}
+
+/**
+ * 40034141「图片转存失败，请重试」是线上实际出现的码（2026-10-21 的 jiuli 日志里 5 次）。
+ * 白名单原先只有 304010 / 40034004 → 这条码一次都不重试，消息直接发送失败。
+ */
+test('40034141 也走换源重试', async () => {
+  let calls = 0
+  const retries = []
+  const result = await sendWithMarkdownImageRetry({
+    endpointPath: '/v2/groups/ABCDEF',
+    messagePayload: { markdown: { content: '![a](https://example.com/a.png)' } },
+    send: async () => {
+      calls += 1
+      if (calls === 1) throw apiError(40034141)
+      return 'ok'
+    },
+    onRetry: ctx => {
+      retries.push(ctx.code)
+      return true
+    },
+    sleep: async () => {}
+  })
+
+  assert.equal(result, 'ok')
+  assert.equal(calls, 2)
+  assert.deepEqual(retries, ['40034141'])
+})
+
+test('304010 仍然重试，非转存错误不重试', async () => {
+  let calls = 0
+  const ok = await sendWithMarkdownImageRetry({
+    endpointPath: '/v2/users/ABC',
+    messagePayload: { markdown: { content: '![a](https://example.com/a.png)' } },
+    send: async () => {
+      calls += 1
+      if (calls === 1) throw apiError(304010, '图片转存错误')
+      return 'ok'
+    },
+    onRetry: () => true,
+    sleep: async () => {}
+  })
+  assert.equal(ok, 'ok')
+
+  // 40034025（参数错误）不是转存问题，换图源也没用，必须原样抛出
+  await assert.rejects(
+    () => sendWithMarkdownImageRetry({
+      endpointPath: '/v2/users/ABC',
+      messagePayload: { markdown: { content: 'x' } },
+      send: async () => { throw apiError(40034025, '参数错误') },
+      onRetry: () => true,
+      sleep: async () => {}
+    }),
+    err => /40034025/.test(err.message)
+  )
+})
+
+test('重试次数耗尽后抛出最后一次错误', async () => {
+  let calls = 0
+  await assert.rejects(
+    () => sendWithMarkdownImageRetry({
+      endpointPath: '/v2/groups/ABCDEF',
+      messagePayload: { markdown: { content: '![a](https://example.com/a.png)' } },
+      send: async () => {
+        calls += 1
+        throw apiError(40034141)
+      },
+      maxRetries: 2,
+      onRetry: () => false,
+      sleep: async () => {}
+    }),
+    err => /40034141/.test(err.message)
+  )
+  assert.equal(calls, 3)
 })
