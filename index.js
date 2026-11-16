@@ -3620,6 +3620,22 @@ const adapter = new class QQBotAdapter {
     return Bot[id].sdk.groupService.getInfo(group_openid)
   }
 
+  /**
+   * 获取用户基本信息（GET /v2/users/{user_openid}/info，官方 2026-11-16 新增，10 QPS）。
+   *
+   * 返回 { union_openid, username, avatar, allow_proactive_msg }：
+   * - union_openid        跨应用关联用户 openid（绑定 3 方应用时有效）
+   * - avatar              用户头像原图 URL
+   * - allow_proactive_msg 是否接收主动推送
+   * 与机器人无好友关系时官方返回 40184001。
+   */
+  async getUserInfo(id, user_openid) {
+    user_openid = this.toGroupManageOpenid(id, user_openid)
+    if (!user_openid) throw new Error('缺少 user_openid')
+    const { data } = await Bot[id].sdk.request.get(`/v2/users/${user_openid}/info`)
+    return data
+  }
+
   getGroupBotState(id, group_openid) {
     group_openid = this.toGroupManageOpenid(id, group_openid)
     return Bot[id].sdk.groupService.getBotState(group_openid)
@@ -4163,13 +4179,15 @@ const adapter = new class QQBotAdapter {
 
   async makeFriendMessage(data, event) {
     const user = await data.bot.fl.get(`${data.self_id}${this.sep}${event.sender.user_id}`)
+    // 官方 2026-11-16：单聊消息事件下发发送者昵称、头像；优先使用官方下发值
+    const officialAvatar = event.author?.avatar || event.author?.user_avatar || event.avatar || ''
     data.sender = {
       user_id: `${data.self_id}${this.sep}${event.sender.user_id}`,
       raw_user_id: event.sender.user_id,
       bot: event.author?.bot || user?.bot || false,
-      nickname: event.sender.user_name || user?.nickname || '',
-      avatar: `https://q.qlogo.cn/qqapp/${data.bot.info.appid}/${event.sender.user_id}/0`,
-      unionid: event.author?.union_openid || user?.unionid || '',
+      nickname: event.sender.user_name || event.author?.username || user?.nickname || '',
+      avatar: officialAvatar || `https://q.qlogo.cn/qqapp/${data.bot.info.appid}/${event.sender.user_id}/0`,
+      unionid: event.author?.union_openid || event.author?.union_openid || user?.unionid || '',
       openid: event.sender?.user_id || user?.openid || ''
     }
     data.platform = 'QQ-private'
@@ -4189,12 +4207,20 @@ const adapter = new class QQBotAdapter {
     const user = await data.bot.fl.get(`${data.self_id}${this.sep}${event.sender.user_id}`)
     const memberOpenid = event.author?.member_openid || event.sender.user_id
     const roleFields = buildGroupRoleFields(event.author?.member_role)
+    // 官方 2026-11-16：群聊消息事件下发 member_nickname（群内昵称）、头像及 union_group_openid（跨应用群标识）
+    const memberNickname = event.author?.member_nickname || event.member_nickname || ''
+    const officialAvatar = event.author?.avatar || event.author?.user_avatar || event.avatar || ''
+    const unionGroupOpenid = event.author?.union_group_openid || event.group_union_openid || event.union_group_openid || ''
+    if (unionGroupOpenid) data.union_group_openid = unionGroupOpenid
     data.sender = {
       user_id: `${data.self_id}${this.sep}${event.sender.user_id}`,
       raw_user_id: event.sender.user_id,
       bot: event.author?.bot || user?.bot || false,
-      nickname: event.sender.user_name || user?.nickname || '',
-      avatar: `https://q.qlogo.cn/qqapp/${data.bot.info.appid}/${event.sender.user_id}/0`,
+      nickname: event.sender.user_name || event.author?.username || user?.nickname || '',
+      // 群内昵称（member_nickname）作为群名片，比 username 更符合 QQ 群场景
+      card: memberNickname || user?.card || '',
+      member_nickname: memberNickname,
+      avatar: officialAvatar || `https://q.qlogo.cn/qqapp/${data.bot.info.appid}/${event.sender.user_id}/0`,
       unionid: event.author?.union_openid || user?.unionid || '',
       union_openid: event.author?.union_openid || user?.union_openid || user?.unionid || '',
       user_openid: event.author?.user_openid || '',
@@ -4232,6 +4258,7 @@ const adapter = new class QQBotAdapter {
     data.member = {
       ...this.pickMember(data.self_id, data.group_id, data.user_id),
       member_openid: memberOpenid,
+      ...(memberNickname ? { member_nickname: memberNickname, card: memberNickname } : {}),
       ...roleFields
     }
   }
@@ -4311,6 +4338,8 @@ const adapter = new class QQBotAdapter {
     await data.bot.gl.set(data.group_id, {
       ...data.bot.gl.get(data.group_id),
       group_id: data.group_id,
+      // 官方 2026-11-16：群消息事件可携带 union_group_openid（跨应用群标识），缓存供后续事件缺失时兜底
+      ...(data.union_group_openid ? { union_group_openid: data.union_group_openid } : {}),
       ...groupRole
     })
     let gml = data.bot.gml.get(data.group_id)
@@ -4473,6 +4502,13 @@ const adapter = new class QQBotAdapter {
       get openid() { return this.sender.openid },
       get user_openid() { return this.sender?.user_openid },
       get member_openid() { return this.sender?.member_openid },
+      get member_nickname() { return this.sender?.member_nickname },
+      get union_group_openid() {
+        return this.raw?.union_group_openid
+          || this.raw?.author?.union_group_openid
+          || (this.group_id ? this.bot?.gl?.get?.(this.group_id)?.union_group_openid : '')
+          || ''
+      },
       get role() { return this.sender?.role },
       get member_role() { return this.sender?.member_role },
       get is_admin() { return this.sender?.is_admin === true },
@@ -4775,6 +4811,8 @@ const adapter = new class QQBotAdapter {
       raw_group_id: event.group_id,
       raw_user_id: rawUserId,
       raw_operator_id: event.operator_id,
+      // 官方 2026-11-16：进群、退群、群成员增减等事件新增 union_group_openid（跨应用群标识）
+      union_group_openid: event.author?.union_group_openid || event.union_group_openid || event.raw?.d?.union_group_openid || undefined,
       platform: event.notice_type === 'guild' ? 'guild-notice' : 'QQ-notice'
     }
     this.setGenerateUrl(data)
@@ -5214,6 +5252,7 @@ const adapter = new class QQBotAdapter {
       dau: new Dau(id, this.sep, config.dauDB),
 
       getGroupInfo: group_openid => this.getGroupInfo(id, group_openid),
+      getUserInfo: user_openid => this.getUserInfo(id, user_openid),
       getGroupBotState: group_openid => this.getGroupBotState(id, group_openid),
       refreshGroupBotState: group_openid => this.refreshGroupBotState(id, group_openid),
       getGroupMemberInfo: (group_openid, member_openid) => this.getGroupMemberInfo(id, group_openid, member_openid),
