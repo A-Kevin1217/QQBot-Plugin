@@ -592,6 +592,12 @@ const schemas = [
     component: 'InputNumber',
     componentProps: { min: 1, max: 100 },
   },
+  {
+    field: 'forceVerifyImageResource',
+    label: 'markdown 图片强校验',
+    bottomHelpMessage: '开启后，markdown 图片转存失败会中断发送并报错（默认关闭：图片可能裂但消息照发）',
+    component: 'Switch',
+  },
 
   // ========== B站图床 ==========
   { label: 'B站图床', component: 'SOFT_GROUP_BEGIN' },

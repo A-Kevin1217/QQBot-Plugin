@@ -71,6 +71,10 @@ let { config, configSave } = await makeConfig('QQBot', {
     enable: true,
     evictBatch: 10
   },
+  // 官方 2026-08-10：markdown 图片转存失败时是否中断发送并返回失败。
+  // 默认关闭（保持原有行为：转存失败也照发，图片可能裂）；开启后发送会报错，
+  // 但能配合媒体换源重试及时发现图片问题。
+  forceVerifyImageResource: false,
   bot: {
     sandbox: false,
     maxRetry: Infinity,

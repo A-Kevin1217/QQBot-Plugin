@@ -1428,7 +1428,10 @@ const adapter = new class QQBotAdapter {
           break
         }
         case 'at':
-          if (i.qq == 'all') { content += '@everyone' } else { content += `<@${i.qq?.replace?.(`${data.self_id}${this.sep}`, '')}>` }
+          // 官方 2026-10-26：群聊 @全体成员必须发 <qqbot-at-everyone /> 标记（纯文本 @everyone 无效）。
+          // 要求机器人是该群管理员，且每个群每天仅 1 次。
+          if (i.qq == 'all') content += '<qqbot-at-everyone />'
+          else { content += `<@${i.qq?.replace?.(`${data.self_id}${this.sep}`, '')}>` }
           break
         case 'text':
           content += await this.makeRawMarkdownText(data, i.text, button)
@@ -1442,9 +1445,14 @@ const adapter = new class QQBotAdapter {
           const { des, url } = imageResult
           content += `${des}${url}`
           break
-        } case 'markdown':
+        }         case 'markdown':
           if (typeof i.data == 'object') messages.push([{ type: 'markdown', ...i.data }])
           else content += i.data
+          break
+        case 'card':
+          // 官方 2026-10-28：群聊/单聊图文卡片。SDK builder 映射为 msg_type=8，
+          // 段结构 { type:'card', data:{ type:'tuwen', content:{...} } }，原样交给 SDK。
+          messages.push([i])
           break
         case 'button':
           if (this.useRawButton(data)) button.push(...this.makeButtons(data, i.data))
@@ -1494,7 +1502,17 @@ const adapter = new class QQBotAdapter {
       if (suffixParts.length && content) content += '\r' + suffixParts.join('\r')
     }
 
-    if (content) { messages.unshift([{ type: 'markdown', content }]) }
+    if (content) {
+      // 官方 2026-08-10：force_verify_image_resource 开启后，图片资源转存失败会中断发送并返回失败。
+      // 手动传 segment.markdown({ content, force_verify_image_resource: true }) 时走 ...i.data 已透传；
+      // 这里是适配器自己拼装 content 的路径，用配置或单条消息的 data 标记开启。
+      const forceVerify = data.forceVerifyImageResource ?? config.forceVerifyImageResource
+      messages.unshift([{
+        type: 'markdown',
+        content,
+        ...(forceVerify ? { force_verify_image_resource: true } : {})
+      }])
+    }
 
     if (button.length) {
       for (const i of messages) {
@@ -1624,7 +1642,8 @@ const adapter = new class QQBotAdapter {
           break
         }
         case 'at':
-          if (i.qq == 'all') content += '@everyone'
+          // 官方 2026-10-26：@全体成员用 <qqbot-at-everyone /> 标记（纯文本 @everyone 无效）
+          if (i.qq == 'all') content += '<qqbot-at-everyone />'
           else {
             if (config.toQQUin && userIdCache[i.qq]) i.qq = userIdCache[i.qq]
             content += `<@${i.qq?.replace?.(`${data.self_id}${this.sep}`, '')}>`
@@ -1704,9 +1723,14 @@ const adapter = new class QQBotAdapter {
 
           content = url
           break
-        } case 'markdown':
+        }         case 'markdown':
           if (typeof i.data == 'object') messages.push([{ type: 'markdown', ...i.data }])
           else content += i.data
+          break
+        case 'card':
+          // 官方 2026-10-28：群聊/单聊图文卡片。SDK builder 映射为 msg_type=8，
+          // 段结构 { type:'card', data:{ type:'tuwen', content:{...} } }，原样交给 SDK。
+          messages.push([i])
           break
         case 'button':
           if (this.useRawButton(data)) button.push(...this.makeButtons(data, i.data))
@@ -3638,6 +3662,51 @@ const adapter = new class QQBotAdapter {
     return data
   }
 
+  /** 生成「邀请用户添加机器人为好友」的分享链接（POST /v2/generate_url_link，SDK >=1.3.4） */
+  generateUrlLink(id, options = {}) {
+    return Bot[id].sdk.botService.generateUrlLink(options)
+  }
+
+  /** 查询全局自定义菜单（官方 2026-08-12 新增） */
+  getCustomMenu(id) {
+    return Bot[id].sdk.menuPanelService.getCustomMenu()
+  }
+
+  /** 修改全局自定义菜单，menu 为官方菜单结构 */
+  updateCustomMenu(id, menu) {
+    return Bot[id].sdk.menuPanelService.updateCustomMenu(menu)
+  }
+
+  /** 查询指令面板列表 */
+  getCommandPanels(id, options = {}) {
+    return Bot[id].sdk.menuPanelService.getCommandPanels(options)
+  }
+
+  /** 创建指令面板 */
+  createCommandPanel(id, options) {
+    return Bot[id].sdk.menuPanelService.createCommandPanel(options)
+  }
+
+  /** 查询单个指令面板详情 */
+  getCommandPanel(id, panel_id) {
+    return Bot[id].sdk.menuPanelService.getCommandPanel(panel_id)
+  }
+
+  /** 修改指令面板 */
+  updateCommandPanel(id, panel_id, panel) {
+    return Bot[id].sdk.menuPanelService.updateCommandPanel(panel_id, panel)
+  }
+
+  /** 删除指令面板 */
+  deleteCommandPanel(id, panel_id) {
+    return Bot[id].sdk.menuPanelService.deleteCommandPanel(panel_id)
+  }
+
+  /** 修改指令面板关联对象 */
+  updateCommandPanelTargets(id, panel_id, options) {
+    return Bot[id].sdk.menuPanelService.updateCommandPanelTargets(panel_id, options)
+  }
+
   getGroupBotState(id, group_openid) {
     group_openid = this.toGroupManageOpenid(id, group_openid)
     return Bot[id].sdk.groupService.getBotState(group_openid)
@@ -5326,6 +5395,15 @@ const adapter = new class QQBotAdapter {
 
       getGroupInfo: group_openid => this.getGroupInfo(id, group_openid),
       getUserInfo: user_openid => this.getUserInfo(id, user_openid),
+      generateUrlLink: options => this.generateUrlLink(id, options),
+      getCustomMenu: () => this.getCustomMenu(id),
+      updateCustomMenu: menu => this.updateCustomMenu(id, menu),
+      getCommandPanels: options => this.getCommandPanels(id, options),
+      createCommandPanel: options => this.createCommandPanel(id, options),
+      getCommandPanel: panel_id => this.getCommandPanel(id, panel_id),
+      updateCommandPanel: (panel_id, panel) => this.updateCommandPanel(id, panel_id, panel),
+      deleteCommandPanel: panel_id => this.deleteCommandPanel(id, panel_id),
+      updateCommandPanelTargets: (panel_id, options) => this.updateCommandPanelTargets(id, panel_id, options),
       getGroupBotState: group_openid => this.getGroupBotState(id, group_openid),
       refreshGroupBotState: group_openid => this.refreshGroupBotState(id, group_openid),
       getGroupMemberInfo: (group_openid, member_openid) => this.getGroupMemberInfo(id, group_openid, member_openid),
