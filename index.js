@@ -3788,7 +3788,14 @@ const adapter = new class QQBotAdapter {
    *
    * SDK 的 removeMembers 不分批，官方单次上限 20 人，这里自动分批串行发送。
    * 返回 { removed, result }：removed 为实际提交的 openid，result 为最后一批的响应。
-   * 权限未开时官方报 40103011（机器人侧开关）/ 40103012（群主侧开关），原样抛给调用方。
+   *
+   * 实测要点（2026-11-16，appid 102822601）：
+   * - 普通成员：200 `{ remove_members_result: 'success' }`，群成员数立即减少；
+   * - 管理员 / 群主 / 机器人：平台返回通用 500 `50105002 处理失败`，不会说明原因。
+   *   想判断目标身份，可以先用禁言接口试一下 —— 同样目标会明确报 `40103004 目标成员为机器人/群主/管理员`。
+   * - 权限未开：`40103011`（机器人侧开关）/ `40103012`（群主侧开关）。
+   * - **官方文档未写**：响应含 `add_to_member_blacklist_fail_openids`，说明支持「踢人同时拉黑」，
+   *   入参可通过 options 透传（如 `{ add_to_member_blacklist: true }`），失败的 openid 会回填到该数组。
    */
   async removeGroupMembers(id, group_openid, member_openids, options = {}) {
     group_openid = this.toGroupManageOpenid(id, group_openid)
