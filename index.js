@@ -42,6 +42,7 @@ import {
   normalizeGroupMemberRole
 } from './lib/groupRole.js'
 import { buildMuteRequests } from './lib/groupMute.js'
+import { buildRemoveMemberRequests } from './lib/groupMembers.js'
 import {
   cacheRemoteMedia,
   cleanupMediaFiles,
@@ -3783,6 +3784,32 @@ const adapter = new class QQBotAdapter {
   }
 
   /**
+   * 批量移除群成员（POST /v2/groups/{group_openid}/batch_remove_members）。
+   *
+   * SDK 的 removeMembers 不分批，官方单次上限 20 人，这里自动分批串行发送。
+   * 返回 { removed, result }：removed 为实际提交的 openid，result 为最后一批的响应。
+   * 权限未开时官方报 40103011（机器人侧开关）/ 40103012（群主侧开关），原样抛给调用方。
+   */
+  async removeGroupMembers(id, group_openid, member_openids, options = {}) {
+    group_openid = this.toGroupManageOpenid(id, group_openid)
+    const batches = buildRemoveMemberRequests(member_openids, value => this.toGroupManageOpenid(id, value))
+    if (!batches.length) throw new Error('缺少要移除的 member_openid')
+    if (batches.length > 1) {
+      Bot.makeLog('debug', ['批量移除群成员超过单次上限，已自动分批', batches.map(batch => batch.length)], id)
+    }
+    const removed = []
+    let result
+    for (const batch of batches) {
+      result = await Bot[id].sdk.groupService.removeMembers(group_openid, {
+        ...options,
+        member_openids: batch
+      })
+      removed.push(...batch)
+    }
+    return { removed, result }
+  }
+
+  /**
    * 批量禁言 / 解禁 / 更新到期时间（/v2/groups/{group_openid}/restrict_chat_setting）。
    *
    * 官方单次最多 20 个成员，超出会自动分批串行发送（保持调用顺序）。
@@ -5289,6 +5316,7 @@ const adapter = new class QQBotAdapter {
       getGroupMembers: (group_openid, options) => this.getGroupMembers(id, group_openid, options),
       getGroupBlacklist: (group_openid, options) => this.getGroupBlacklist(id, group_openid, options),
       setGroupBlacklist: (group_openid, op, member_openids) => this.setGroupBlacklist(id, group_openid, op, member_openids),
+      removeGroupMembers: (group_openid, member_openids, options) => this.removeGroupMembers(id, group_openid, member_openids, options),
       setGroupBan: (group_openid, member_openid, duration) => this.setGroupBan(id, group_openid, member_openid, duration),
       setGroupBanMembers: (group_openid, members, duration) => this.setGroupBanMembers(id, group_openid, members, duration),
       unmuteGroupMembers: (group_openid, members) => this.unmuteGroupMembers(id, group_openid, members),
