@@ -3754,6 +3754,34 @@ const adapter = new class QQBotAdapter {
   }
 
   /**
+   * 群成员列表（SDK >=1.3.4）：自动遍历 next_cursor 拉取全部成员。
+   * options.forceRefresh 为 true 时跳过 SDK 内置缓存强制拉取。
+   */
+  getGroupMembers(id, group_openid, options = {}) {
+    group_openid = this.toGroupManageOpenid(id, group_openid)
+    return Bot[id].sdk.groupService.getMembers(group_openid, options)
+  }
+
+  /** 群黑名单查询（GET /v2/groups/{group_openid}/member_blacklist） */
+  getGroupBlacklist(id, group_openid, options = {}) {
+    group_openid = this.toGroupManageOpenid(id, group_openid)
+    return Bot[id].sdk.groupService.getMemberBlacklist(group_openid, options)
+  }
+
+  /**
+   * 群黑名单操作（POST /v2/groups/{group_openid}/member_blacklist）。
+   * op: 'add' 拉黑 / 'del' 解除拉黑；member_openids 为成员 openid 数组。
+   */
+  setGroupBlacklist(id, group_openid, op, member_openids) {
+    group_openid = this.toGroupManageOpenid(id, group_openid)
+    return Bot[id].sdk.groupService.updateMemberBlacklist(group_openid, {
+      op,
+      member_openids: (Array.isArray(member_openids) ? member_openids : [member_openids])
+        .map(item => this.toGroupManageOpenid(id, item))
+    })
+  }
+
+  /**
    * 批量禁言 / 解禁 / 更新到期时间（/v2/groups/{group_openid}/restrict_chat_setting）。
    *
    * 官方单次最多 20 个成员，超出会自动分批串行发送（保持调用顺序）。
@@ -5257,6 +5285,9 @@ const adapter = new class QQBotAdapter {
       refreshGroupBotState: group_openid => this.refreshGroupBotState(id, group_openid),
       getGroupMemberInfo: (group_openid, member_openid) => this.getGroupMemberInfo(id, group_openid, member_openid),
       getGroupMuteState: group_openid => this.getGroupMuteState(id, group_openid),
+      getGroupMembers: (group_openid, options) => this.getGroupMembers(id, group_openid, options),
+      getGroupBlacklist: (group_openid, options) => this.getGroupBlacklist(id, group_openid, options),
+      setGroupBlacklist: (group_openid, op, member_openids) => this.setGroupBlacklist(id, group_openid, op, member_openids),
       setGroupBan: (group_openid, member_openid, duration) => this.setGroupBan(id, group_openid, member_openid, duration),
       setGroupBanMembers: (group_openid, members, duration) => this.setGroupBanMembers(id, group_openid, members, duration),
       unmuteGroupMembers: (group_openid, members) => this.unmuteGroupMembers(id, group_openid, members),
