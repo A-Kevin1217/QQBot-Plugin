@@ -4534,6 +4534,16 @@ const adapter = new class QQBotAdapter {
     const mentionAtIds = Array.isArray(event.mentions)
       ? _.uniq(event.mentions.flatMap(m => [m.id, m.member_openid, m.user_id, m.openid]).filter(Boolean))
       : []
+
+    // SDK 的 removeAt 会把 content 里所有 @ 段删掉（不只机器人自己），日志里只剩正文，
+    // 排查"某人是哪个 openid"时无从下手。这里把 @ 列表（openid + 昵称）单独打一条：
+    // 仅在消息里 @ 了除机器人以外的其他人时输出，避免日常刷屏。
+    const otherMentions = Array.isArray(event.mentions)
+      ? event.mentions.filter(m => !(m?.is_you === true) && m?.scope !== 'all')
+      : []
+    if (otherMentions.length) {
+      Bot.makeLog('info', [`消息 @ 列表：${otherMentions.map(m => `${m.username || m.nick || '?'}(${m.member_openid || m.id || m.user_id || '?'})`).join(', ')}`], id)
+    }
     const rawMessage = event.raw_message || event.content || ''
     let message = flattenReceivedMessage(event.message || [])
     let raw_message = rawMessage
