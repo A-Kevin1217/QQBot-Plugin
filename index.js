@@ -118,14 +118,16 @@ async function resolveImageSizeInput(source) {
   }
 }
 
-const QQBot = await (async () => {
+const SDKModule = await (async () => {
   for (const pkg of ['qq-official-bot', 'qq-group-bot']) {
     try {
-      const { Bot } = await import(pkg)
-      return Bot
+      const mod = await import(pkg)
+      return { Bot: mod.Bot, segment: mod.segment }
     } catch (e) { }
   }
 })()
+
+const QQBot = SDKModule?.Bot
 
 function adaptSendableForSDK(msg) {
   if (msg == null) return msg
@@ -5150,6 +5152,11 @@ const adapter = new class QQBotAdapter {
     const sdk = new QQBot(opts)
     disableAxiosEnvProxy(sdk.request)
 
+    // SDK 的消息段构造器（segment.card / segment.markdown / segment.at ...）挂到实例上，
+    // 插件可直接用 Bot[e.self_id].sdk.segment.card({...}) 发图文卡片，
+    // 不必自己 import 'qq-official-bot'。
+    if (SDKModule?.segment) sdk.segment = SDKModule.segment
+
     // 令牌失效(11244/401)自动刷新重试：SDK 的 Auth 刷新失败 3 次后会彻底放弃，
     // 此后所有 REST 调用都拿过期令牌，只能重启机器人。
     const sdkLog = (level, ...args) => Bot.makeLog(level, args, id)
@@ -5355,6 +5362,8 @@ const adapter = new class QQBotAdapter {
     Bot[id] = {
       adapter: this,
       sdk,
+      // 群/单聊专用消息段：Bot[e.self_id].segment.card({...}) 发图文卡片
+      segment: SDKModule?.segment,
       login() {
         return this.sdk.start()
       },
