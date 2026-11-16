@@ -1,20 +1,16 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {
-  uploadMediaImage,
-  listAllMediaImages,
   selectEvictionTargets,
   detectMediaImageContentType,
   normalizeMediaImageName,
   isMediaImageUrl,
   isMediaImageQuotaError,
   isMediaImageReferenceError,
-  MediaImageCache,
-  MEDIA_IMAGE_MAX_BYTES
+  MediaImageCache
 } from '../lib/mediaImages.js'
 import { shouldUploadToImageBed } from '../Model/markdownImage.js'
 
@@ -24,44 +20,8 @@ const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(
 const GIF = Buffer.concat([Buffer.from('GIF89a', 'ascii'), Buffer.alloc(40, 3)])
 const WEBP = Buffer.concat([Buffer.from('RIFF', 'ascii'), Buffer.alloc(4), Buffer.from('WEBP', 'ascii'), Buffer.alloc(40, 4)])
 
-function md5 (buffer) {
-  return crypto.createHash('md5').update(buffer).digest('hex')
-}
-
 function apiError (code) {
   return Object.assign(new Error(`code(${code})`), { response: { data: { code } } })
-}
-
-function makeRequest (handlers) {
-  const calls = []
-  return {
-    calls,
-    async post (url, body) {
-      calls.push({ method: 'post', url, body })
-      const handler = handlers[url]
-      if (!handler) throw new Error(`未预期的 POST: ${url}`)
-      return handler(body)
-    },
-    async get (url) {
-      calls.push({ method: 'get', url })
-      const handler = handlers[url]
-      if (!handler) throw new Error(`未预期的 GET: ${url}`)
-      return handler()
-    },
-    async delete (url) {
-      calls.push({ method: 'delete', url })
-      const handler = handlers[url]
-      if (!handler) throw new Error(`未预期的 DELETE: ${url}`)
-      return handler()
-    }
-  }
-}
-
-function makeFetch (calls) {
-  return async (url, init) => {
-    calls.push({ url, init })
-    return { ok: true, status: 200, headers: { get: () => `"${md5(init.body)}"` } }
-  }
 }
 
 test('按魔数识别图片类型，未知类型返回空', () => {
@@ -86,104 +46,6 @@ test('文件名后缀跟随真实类型：兼容后缀保留，不兼容后缀�
   assert.equal(normalizeMediaImageName('a:b*.png', 'image/png'), 'a_b_.png')
 })
 
-test('上传走 prepare → PUT → complete 三步，参数与头都对得上', async () => {
-  const buffer = PNG
-  const fetchCalls = []
-  const request = makeRequest({
-    '/v2/media-images/prepare': body => {
-      assert.equal(body.file_name, 'kline.png')
-      assert.equal(body.file_size, buffer.length)
-      assert.equal(body.content_type, 'image/png')
-      assert.equal(body.md5, md5(buffer))
-      assert.equal(body.sha1, crypto.createHash('sha1').update(buffer).digest('hex'))
-      return { data: { upload_id: 'upload_1', presigned_url: 'https://cos.example.com/obj', expires_in: 3600 } }
-    },
-    '/v2/media-images/complete': body => {
-      assert.equal(body.upload_id, 'upload_1')
-      assert.equal(body.md5, md5(buffer))
-      return { data: { image_id: 'img_1', url: 'qqbot-media://image/v1/token', ttl: 7776000 } }
-    }
-  })
-
-  const result = await uploadMediaImage({
-    request,
-    buffer,
-    fileName: 'kline.png',
-    fetchImpl: makeFetch(fetchCalls)
-  })
-
-  assert.equal(result.image_id, 'img_1')
-  assert.equal(result.url, 'qqbot-media://image/v1/token')
-  assert.equal(result.ttl, 7776000)
-
-  // PUT 的 Content-Type 必须与 prepare 声明完全一致，否则 COS 403
-  assert.equal(fetchCalls.length, 1)
-  assert.equal(fetchCalls[0].init.method, 'PUT')
-  assert.equal(fetchCalls[0].init.headers['Content-Type'], 'image/png')
-  assert.equal(fetchCalls[0].init.headers['Content-Length'], String(buffer.length))
-  assert.equal(fetchCalls[0].init.body.length, buffer.length)
-})
-
-test('类型不支持或超过 10MB 时返回 null，不浪费一次上传', async () => {
-  const request = makeRequest({})
-  const fetchCalls = []
-
-  assert.equal(await uploadMediaImage({
-    request,
-    buffer: Buffer.from('plain text body'),
-    fetchImpl: makeFetch(fetchCalls)
-  }), null)
-
-  assert.equal(await uploadMediaImage({
-    request,
-    buffer: Buffer.concat([PNG, Buffer.alloc(MEDIA_IMAGE_MAX_BYTES)]),
-    fetchImpl: makeFetch(fetchCalls)
-  }), null)
-
-  assert.equal(request.calls.length, 0)
-  assert.equal(fetchCalls.length, 0)
-})
-
-test('上传任务过期(40035003)时重新申请一次', async () => {
-  const fetchCalls = []
-  let prepareCount = 0
-  const request = makeRequest({
-    '/v2/media-images/prepare': () => {
-      prepareCount += 1
-      return { data: { upload_id: `upload_${prepareCount}`, presigned_url: 'https://cos.example.com/obj' } }
-    },
-    '/v2/media-images/complete': body => {
-      if (body.upload_id === 'upload_1') throw apiError(40035003)
-      return { data: { image_id: 'img_2', url: 'qqbot-media://image/v1/ok', ttl: 100 } }
-    }
-  })
-
-  const retries = []
-  const result = await uploadMediaImage({
-    request,
-    buffer: PNG,
-    fetchImpl: makeFetch(fetchCalls),
-    retryDelayMs: 1,
-    onRetry: ctx => retries.push(ctx.code)
-  })
-
-  assert.equal(result.url, 'qqbot-media://image/v1/ok')
-  assert.equal(prepareCount, 2)
-  assert.deepEqual(retries, ['40035003'])
-})
-
-test('配额打满(40035007)不重试，直接抛给调用方去淘汰', async () => {
-  const request = makeRequest({
-    '/v2/media-images/prepare': () => { throw apiError(40035007) }
-  })
-
-  await assert.rejects(
-    () => uploadMediaImage({ request, buffer: PNG, fetchImpl: makeFetch([]), retryDelayMs: 1 }),
-    err => isMediaImageQuotaError(err)
-  )
-  assert.equal(request.calls.length, 1)
-})
-
 test('错误码分类：引用失效与配额是两回事', () => {
   assert.equal(isMediaImageQuotaError(apiError(40035007)), true)
   assert.equal(isMediaImageQuotaError(apiError(40035003)), false)
@@ -191,23 +53,6 @@ test('错误码分类：引用失效与配额是两回事', () => {
   assert.equal(isMediaImageReferenceError(apiError(40035010)), true)
   assert.equal(isMediaImageReferenceError(apiError(40035007)), false)
   assert.equal(isMediaImageReferenceError(new Error('网络炸了')), false)
-})
-
-test('查询接口按 next_cursor 翻页直到末页', async () => {
-  const request = {
-    calls: [],
-    async get (url) {
-      this.calls.push(url)
-      if (url === '/v2/media-images') {
-        return { data: { images: [{ image_id: 'a' }], next_cursor: 'c1', total: 2 } }
-      }
-      return { data: { images: [{ image_id: 'b' }], next_cursor: '', total: 2 } }
-    }
-  }
-
-  const images = await listAllMediaImages({ request })
-  assert.deepEqual(images.map(i => i.image_id), ['a', 'b'])
-  assert.deepEqual(request.calls, ['/v2/media-images', '/v2/media-images?cursor=c1'])
 })
 
 test('淘汰时按上传时间升序挑最旧的', () => {

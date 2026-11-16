@@ -49,9 +49,8 @@ import {
 } from './lib/media.js'
 import { prepareMarkdownImageBytes } from './lib/markdownImageBytes.js'
 import {
-  uploadMediaImage,
-  deleteMediaImage,
-  listAllMediaImages,
+  detectMediaImageContentType,
+  normalizeMediaImageName,
   selectEvictionTargets,
   hashMediaImage,
   isMediaImageUrl,
@@ -1833,13 +1832,9 @@ const adapter = new class QQBotAdapter {
     }
   }
 
-  /**
-   * 取当前机器人的 SDK 请求客户端。
-   * makeMarkdownImage 的 data 有时只带 { self_id }（由别的插件构造），拿不到 data.bot，
-   * 所以这里补一条从 Bot[self_id] 兜底的路径。
-   */
-  #getSdkRequest (data) {
-    return data?.bot?.sdk?.request || Bot[String(data?.self_id || '')]?.sdk?.request || null
+  /** 取当前机器人的素材库服务（SDK >=1.3.4），拿不到返回 null */
+  #getMaterialService (data) {
+    return data?.bot?.sdk?.materialService || Bot[String(data?.self_id || '')]?.sdk?.materialService || null
   }
 
   /**
@@ -1849,17 +1844,21 @@ const adapter = new class QQBotAdapter {
    * 体量超限都会被 304010（图片转存错误）拦下；素材库的图是平台自己的副本，发送时不用
    * 再下载，这条路根本不存在。
    *
-   * 代价是配额（单机器人 100 张 / 单张 10MB / 仅 png·jpeg·gif·webp），所以：
-   *   - 按内容 sha1 去重，同一张图只传一次（缓存落盘，重启也能复用）；
-   *   - 引用是滑动过期，缓存里的 expires_at 快到期就重传，避免发送时才撞 40035009；
-   *   - 配额打满（40035007）时先淘汰最旧的若干张再重试一次。
+   * 上传/查询/删除直接走 SDK 的 materialService（1.3.4 起原生支持），适配器只保留
+   * SDK 没有的部分：按内容 sha1 的本地去重缓存、快到期提前重传、配额打满时的淘汰重试。
    */
   async uploadToMediaLibrary (data, buffer, options = {}) {
     const cfg = config.mediaLibrary || {}
     if (cfg.enable === false) return ''
     if (!Buffer.isBuffer(buffer) || !buffer.length) return ''
-    const request = this.#getSdkRequest(data)
-    if (!request) return ''
+    const material = this.#getMaterialService(data)
+    if (!material) return ''
+
+    // SDK uploadImage 只接受 png/jpeg/gif/webp，且要求文件名后缀与类型一致：
+    // 按魔数判定真实类型并规范化文件名，不合规的图直接不进素材库（交给图床链路）。
+    const contentType = detectMediaImageContentType(buffer)
+    if (!contentType) return ''
+    const fileName = normalizeMediaImageName(options.fileName || '', contentType)
 
     const selfId = String(data.self_id || '')
     const { sha1 } = hashMediaImage(buffer)
@@ -1876,16 +1875,18 @@ const adapter = new class QQBotAdapter {
       this.mediaImageCache.remove(selfId, sha1)
     }
 
-    const upload = () => uploadMediaImage({
-      request,
-      buffer,
-      fileName: options.fileName || '',
-      onRetry: ({ attempt, code, error }) => Bot.makeLog('warn', ['素材库上传重试', {
-        attempt,
-        code,
-        error: error?.message || String(error)
-      }], data.self_id)
-    })
+    // SDK 的 uploadImage 没有重试：prepare 得到的 upload_id 只有 4 小时有效期，
+    // 撞上 40035003（上传任务不存在/过期）或 40035006（服务端内部错误）时重新走一遍。
+    const upload = async () => {
+      try {
+        return await material.uploadImage(buffer, { fileName, contentType })
+      } catch (err) {
+        const code = getQQApiErrorCode(err)
+        if (code !== '40035003' && code !== '40035006') throw err
+        Bot.makeLog('warn', ['素材库上传任务失效，重新申请', { code }], data.self_id)
+        return material.uploadImage(buffer, { fileName, contentType })
+      }
+    }
 
     let result
     try {
@@ -1918,13 +1919,13 @@ const adapter = new class QQBotAdapter {
     if (cached?.image_id && cached.image_id !== result.image_id) {
       const staleId = cached.image_id
       this.mediaImageCache.removeByImageId(selfId, staleId)
-      deleteMediaImage({ request, imageId: staleId })
+      Promise.resolve(material.deleteImage(staleId))
         .catch(err => Bot.makeLog('debug', ['清理素材库旧图片失败', staleId, err?.message || err], data.self_id))
     }
 
     Bot.makeLog('debug', ['图片已进入平台素材库', {
       image_id: result.image_id,
-      file_name: result.file_name,
+      file_name: fileName,
       ttl: result.ttl
     }], data.self_id)
     return result.url
@@ -1935,18 +1936,18 @@ const adapter = new class QQBotAdapter {
    * 用平台的查询接口拿真实列表，而不是只看本地缓存 —— 缓存可能落后（比如别的进程传过图）。
    */
   async #evictMediaImages (data, batch) {
-    const request = this.#getSdkRequest(data)
-    if (!request) return 0
+    const material = this.#getMaterialService(data)
+    if (!material) return 0
     const selfId = String(data.self_id || '')
     const count = Math.max(1, Math.floor(Number(batch) || MEDIA_IMAGE_EVICT_BATCH))
 
     try {
-      const images = await listAllMediaImages({ request })
+      const images = await material.getImages()
       const targets = selectEvictionTargets(images, count)
       let deleted = 0
       for (const image of targets) {
         try {
-          await deleteMediaImage({ request, imageId: image?.image_id })
+          await material.deleteImage(image?.image_id)
           this.mediaImageCache.removeByImageId(selfId, image?.image_id)
           deleted += 1
         } catch (err) {
@@ -3728,8 +3729,8 @@ const adapter = new class QQBotAdapter {
     group_openid = this.toGroupManageOpenid(id, group_openid)
     member_openid = this.toGroupManageOpenid(id, member_openid)
     try {
-      const { data } = await Bot[id].sdk.request.get(`/v2/groups/${group_openid}/members/${member_openid}`)
-      return data
+      // SDK >=1.3.4 提供 groupService.getMemberInfo，不再手写 /v2/groups/{gid}/members/{mid}
+      return await Bot[id].sdk.groupService.getMemberInfo(group_openid, member_openid)
     } catch (err) {
       if (!isQQBotApiNoAccessError(err)) throw err
       const groupKey = `${id}${this.sep}${group_openid}`
