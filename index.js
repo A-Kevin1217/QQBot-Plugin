@@ -4344,8 +4344,8 @@ const adapter = new class QQBotAdapter {
     // 官方 2026-11-16：群聊消息事件下发 member_nickname（群内昵称）、头像及 union_group_openid（跨应用群标识）
     const memberNickname = event.author?.member_nickname || event.member_nickname || ''
     const officialAvatar = event.author?.avatar || event.author?.user_avatar || event.avatar || ''
-    const unionGroupOpenid = event.author?.union_group_openid || event.group_union_openid || event.union_group_openid || ''
-    if (unionGroupOpenid) data.union_group_openid = unionGroupOpenid
+    // union_group_openid 在 data 上是只读 getter（从 raw 事件读取），此处不能再赋值，
+    // 否则 TypeError: Cannot set property union_group_openid of #<Object> which has only a getter
     data.sender = {
       user_id: `${data.self_id}${this.sep}${event.sender.user_id}`,
       raw_user_id: event.sender.user_id,
@@ -4649,6 +4649,7 @@ const adapter = new class QQBotAdapter {
       get member_nickname() { return this.sender?.member_nickname },
       get union_group_openid() {
         return this.raw?.union_group_openid
+          || this.raw?.group_union_openid
           || this.raw?.author?.union_group_openid
           || (this.group_id ? this.bot?.gl?.get?.(this.group_id)?.union_group_openid : '')
           || ''
