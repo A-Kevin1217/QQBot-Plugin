@@ -75,6 +75,11 @@ let { config, configSave } = await makeConfig('QQBot', {
   // 默认关闭（保持原有行为：转存失败也照发，图片可能裂）；开启后发送会报错，
   // 但能配合媒体换源重试及时发现图片问题。
   forceVerifyImageResource: false,
+  // 互动事件（按钮回调）ACK 时附带的自定义提示文案。
+  // 官方文档只定义 code，客户端据 code 显示固定 toast（如「操作成功」）；
+  // 社区有「PUT /interactions 带 msg 可自定义 toast」的说法，文档未记载 —— 填了才会带 msg 字段。
+  // 留空 = 保持官方默认行为。
+  interactionAckMsg: '',
   bot: {
     sandbox: false,
     maxRetry: Infinity,
