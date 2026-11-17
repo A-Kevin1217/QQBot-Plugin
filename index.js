@@ -4781,19 +4781,20 @@ const adapter = new class QQBotAdapter {
   /**
    * 回应互动事件（PUT /interactions/{interaction_id}）。
    *
-   * 官方文档只定义了 code：0 成功 / 1 操作失败 / 2 操作频繁 / 3 重复操作 / 4 没有权限 / 5 仅管理员，
+   * 官方文档只定义 code：0 成功 / 1 操作失败 / 2 操作频繁 / 3 重复操作 / 4 没有权限 / 5 仅管理员，
    * 客户端据 code 显示固定 toast（「操作成功」等）。
-   * 社区有「附带 msg 自定义 toast 文案」的说法但文档未记载，故做成可选：
-   * 配置 interactionAckMsg 非空时才带上 msg 字段，默认不带（保持官方行为）。
+   *
+   * 实测结论（2026-11-18，appid 102822601，Mac QQ）：
+   * - 请求体额外带 `msg` / `message` / `toast` 字段会被平台**静默忽略**，toast 仍显示「操作成功」；
+   * - 官方告警消息里「已屏蔽」那种自定义 toast，靠的是 `action.data = BOT1.0_...` 的**平台内置动作令牌**，
+   *   客户端本地识别签名后执行并用 visited_label 作提示，不回调机器人服务器 —— 自定义按钮无法复刻。
+   * 所以这里只发 code，不再尝试自定义文案。
    */
   async #ackInteraction (id, event, code = 0) {
     if (event.replied) return true
     event.replied = true
     const interactionId = String(event.notice_id || '').replace(/^INTERACTION_CREATE:/, '')
-    const msg = String(config.interactionAckMsg || '').trim()
-    const body = { code }
-    if (msg) body.msg = msg
-    return Bot[id].sdk.request.put(`/interactions/${interactionId}`, body)
+    return Bot[id].sdk.request.put(`/interactions/${interactionId}`, { code })
   }
 
   async makeCallback(id, event) {
